@@ -1,0 +1,5 @@
+git+https://github.com/iqoptionapi/iqoptionapi.git
+pandas
+numpy
+requests
+websocket-client==0.56
