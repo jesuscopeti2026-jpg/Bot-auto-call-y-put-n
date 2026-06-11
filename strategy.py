@@ -2,89 +2,71 @@ import numpy as np
 import pandas as pd
 
 # ==================================================
-# 🚀 ESTRATEGIA: REVERSIÓN EN SOPORTE / RESISTENCIA
-# ✅ Optimizada para encontrar más señales
-# ✅ Reglas claras pero flexibles
-# ✅ Sin errores
+# 🚀 ESTRATEGIA EXTREMADAMENTE FLEXIBLE PARA MÁS SEÑALES
+# ✅ Sin errores de Pandas
+# ✅ Condiciones mínimas para asegurar señales
 # ==================================================
 
-def get_reversal_signal(df, tolerancia=0.0012, ventana=6):
-    if len(df) < ventana + 2:
+def get_trend_signal(df):
+    # Requiere menos velas para poder operar más frecuentemente
+    if len(df) < 10:
         return None
 
     df = df.copy()
 
-    # --------------------------
-    # DETECTAR NIVELES CLAVE
-    # --------------------------
-    # Soportes (mínimos recientes)
-    df['minimo'] = df['low'].rolling(window=ventana, center=False).min()
-    soportes = df['minimo'].dropna().unique()
-    soportes = sorted([s for s in soportes if s > 0])
+    # Indicadores simplificados y flexibles
+    df['ema8'] = df['close'].ewm(span=8, adjust=False).mean()
+    df['ema13'] = df['close'].ewm(span=13, adjust=False).mean()
+    df['ema21'] = df['close'].ewm(span=21, adjust=False).mean()
 
-    # Resistencias (máximos recientes)
-    df['maximo'] = df['high'].rolling(window=ventana, center=False).max()
-    resistencias = df['maximo'].dropna().unique()
-    resistencias = sorted([r for r in resistencias if r > 0])
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=7, min_periods=1).mean() # Menos periodos
+    avg_loss = loss.rolling(window=7, min_periods=1).mean().replace(0, 0.001) # Menos periodos
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100.0 - (100.0 / (1.0 + rs))
 
-    # --------------------------
-    # VALORES ACTUALES
-    # --------------------------
+    df['macd'] = df['ema13'] - df['ema21']
+    df['signal'] = df['macd'].ewm(span=5, adjust=False).mean() # MACD signal más rápido
+
     try:
-        cierre = float(df['close'].iloc[-1])
-        apertura = float(df['open'].iloc[-1])
-        alto = float(df['high'].iloc[-1])
-        bajo = float(df['low'].iloc[-1])
-        
-        # Tendencia de las últimas 2 velas
-        cierre_anterior = float(df['close'].iloc[-2])
-        tendencia_anterior = cierre_anterior - float(df['close'].iloc[-3]) if len(df)>=3 else 0
+        e8_1 = float(df['ema8'].iloc[-1])
+        e13_1 = float(df['ema13'].iloc[-1])
+        e21_1 = float(df['ema21'].iloc[-1])
+
+        c1 = float(df['close'].iloc[-1])
+        c2 = float(df['close'].iloc[-2])
+        o1 = float(df['open'].iloc[-1])
+
+        macd1 = float(df['macd'].iloc[-1])
+        sig1 = float(df['signal'].iloc[-1])
+        rsi1 = float(df['rsi'].iloc[-1])
+        vol1 = float(df['volume'].iloc[-1])
+        vol_prom = float(df['volume'].iloc[-5:-1].mean()) # Promedio de volumen más corto
 
     except Exception:
         return None
 
-    senal = None
     fuerza = 0
-    tipo_nivel = ""
+    senal = None
+    tipo = ""
 
-    # --------------------------
-    # COMPRA EN SOPORTE
-    # --------------------------
-    for soporte in soportes:
-        if abs(cierre - soporte) <= tolerancia:
-            # Veníamos bajando o lateral
-            if tendencia_anterior <= 0:
-                # Vela muestra cambio
-                if cierre > apertura:
-                    senal = "call"
-                    tipo_nivel = "Soporte"
-                    fuerza = 40
-                    if bajo >= soporte - tolerancia:
-                        fuerza += 15
-                    if (cierre - apertura) > tolerancia * 0.3:
-                        fuerza += 15
-                    break
+    # ✅ COMPRA (ALCISTA) - Condiciones MÍNIMAS
+    cond_compra = (
+        e8_1 > e13_1 and # Cruce de EMAs
+        macd1 > sig1 and # MACD alcista
+        rsi1 > 35.0 and # RSI no sobrevendido
+        c1 > o1         # Vela alcista
+    )
 
-    # --------------------------
-    # VENTA EN RESISTENCIA
-    # --------------------------
-    if senal is None:
-        for resistencia in resistencias:
-            if abs(cierre - resistencia) <= tolerancia:
-                # Veníamos subiendo o lateral
-                if tendencia_anterior >= 0:
-                    # Vela muestra cambio
-                    if cierre < apertura:
-                        senal = "put"
-                        tipo_nivel = "Resistencia"
-                        fuerza = 40
-                        if alto <= resistencia + tolerancia:
-                            fuerza += 15
-                        if (apertura - cierre) > tolerancia * 0.3:
-                            fuerza += 15
-                        break
+    if cond_compra:
+        senal = "call"
+        tipo = "alcista"
+        fuerza = 40 # Fuerza base muy baja
+        # Pequeños aumentos de fuerza por confirmaciones
+        if e13_1 > e21_1: fuerza += 5
+        if c1 > c2: fuerza += 5
+        if vol1 >= vol_prom * 0.4: fuerza += 5 # Umbral de volumen más bajo
 
-    if senal is None:
-        return None
-
-    return (senal, min(fuerza, 100), tipo_nivel)
+    
