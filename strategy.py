@@ -2,20 +2,22 @@ import numpy as np
 import pandas as pd
 
 # ==================================================
-# 🚀 ESTRATEGIA DE REVERSIÓN EN SOPORTE / RESISTENCIA
-# ✅ Solo opera si el precio toca un nivel importante
-# ✅ Compatible con bot.py
-# ✅ Cálculo automático de niveles clave
+# 🚀 ESTRATEGIA DE REVERSIÓN - MÁS ENTRADAS
+# ✅ Solo opera en Soporte / Resistencia
+# ✅ Condiciones más flexibles
+# ✅ Detección de niveles ampliada
+# ✅ Compatible con todos los pares OTC
 # ==================================================
 
-def get_reversal_signal(df, tolerancia_nivel=0.0012, ventana_niveles=6):
-    if len(df) < ventana_niveles + 5:
+def get_reversal_signal(df, tolerancia_nivel=0.0018, ventana_niveles=5):
+    # Reducimos velas mínimas para analizar más rápido
+    if len(df) < ventana_niveles + 3:
         return None
 
     df = df.copy()
 
     # --------------------------
-    # CÁLCULO DE INDICADORES
+    # INDICADORES AJUSTADOS
     # --------------------------
     df['ema8'] = df['close'].ewm(span=8, adjust=False).mean()
     df['ema13'] = df['close'].ewm(span=13, adjust=False).mean()
@@ -24,34 +26,40 @@ def get_reversal_signal(df, tolerancia_nivel=0.0012, ventana_niveles=6):
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=7, min_periods=1).mean()
-    avg_loss = loss.rolling(window=7, min_periods=1).mean().replace(0, 0.001)
+    avg_gain = gain.rolling(window=5, min_periods=1).mean()
+    avg_loss = loss.rolling(window=5, min_periods=1).mean().replace(0, 0.001)
     rs = avg_gain / avg_loss
     df['rsi'] = 100.0 - (100.0 / (1.0 + rs))
 
     df['macd'] = df['ema13'] - df['ema21']
-    df['signal'] = df['macd'].ewm(span=5, adjust=False).mean()
+    df['signal'] = df['macd'].ewm(span=4, adjust=False).mean()
 
     # --------------------------
-    # DETECTAR NIVELES DE SOPORTE Y RESISTENCIA
+    # DETECCIÓN DE NIVELES MEJORADA
     # --------------------------
     def detectar_niveles(datos, ventana):
         soportes = []
         resistencias = []
-        for i in range(ventana, len(datos)-ventana):
-            min_local = datos['low'].iloc[i-ventana:i+ventana+1].min()
-            max_local = datos['high'].iloc[i-ventana:i+ventana+1].max()
-            if datos['low'].iloc[i] == min_local:
-                soportes.append(round(min_local, 5))
-            if datos['high'].iloc[i] == max_local:
-                resistencias.append(round(max_local, 5))
-        # Eliminar duplicados y ordenar
-        return sorted(list(set(soportes))), sorted(list(set(resistencias)))
+        total = len(datos)
+        # Analizamos todo el historial disponible
+        for i in range(ventana, total - ventana):
+            min_rango = datos['low'].iloc[i-ventana:i+ventana+1].min()
+            max_rango = datos['high'].iloc[i-ventana:i+ventana+1].max()
+            
+            if abs(datos['low'].iloc[i] - min_rango) / min_rango <= 0.001:
+                soportes.append(round(min_rango, 5))
+            if abs(datos['high'].iloc[i] - max_rango) / max_rango <= 0.001:
+                resistencias.append(round(max_rango, 5))
+        
+        # Eliminamos duplicados y tomamos los más recientes
+        soportes = sorted(list(set(soportes)), reverse=True)[:8]
+        resistencias = sorted(list(set(resistencias)))[:8]
+        return soportes, resistencias
 
     soportes, resistencias = detectar_niveles(df, ventana_niveles)
 
     # --------------------------
-    # EXTRACCIÓN DE DATOS ACTUALES
+    # DATOS ACTUALES
     # --------------------------
     try:
         e8_1 = float(df['ema8'].iloc[-1])
@@ -65,19 +73,17 @@ def get_reversal_signal(df, tolerancia_nivel=0.0012, ventana_niveles=6):
 
         macd1 = float(df['macd'].iloc[-1])
         sig1 = float(df['signal'].iloc[-1])
+        hist1 = float(df['macd'].iloc[-1] - df['signal'].iloc[-1])
         rsi1 = float(df['rsi'].iloc[-1])
         vol1 = float(df['volume'].iloc[-1])
 
-        if len(df) >= 6:
-            vol_prom = float(df['volume'].iloc[-5:-1].mean())
-        else:
-            vol_prom = vol1 if vol1 > 0 else 1.0
+        vol_prom = float(df['volume'].iloc[-4:-1].mean()) if len(df) >= 5 else max(vol1, 1.0)
 
     except Exception:
         return None
 
     # --------------------------
-    # VERIFICAR SI ESTÁ EN ZONA DE SOPORTE O RESISTENCIA
+    # VERIFICACIÓN EN NIVEL
     # --------------------------
     en_soporte = False
     en_resistencia = False
@@ -93,54 +99,52 @@ def get_reversal_signal(df, tolerancia_nivel=0.0012, ventana_niveles=6):
             break
 
     if not en_soporte and not en_resistencia:
-        return None  # No opera si no está en nivel clave
+        return None
 
     # --------------------------
-    # CONDICIONES DE REVERSIÓN
+    # CONDICIONES FLEXIBLES PARA MÁS SEÑALES
     # --------------------------
     fuerza = 0
     senal = None
     tipo_nivel = ""
 
-    # ✅ REVERSIÓN ALCISTA (COMPRA) → en SOPORTE
+    # ✅ COMPRA en SOPORTE
     if en_soporte:
-        cond_rev_compra = (
-            e8_1 > e13_1 and
-            macd1 > sig1 and
-            rsi1 > 30.0 and rsi1 < 65.0 and
-            c1 > o1
+        cond_compra = (
+            (e8_1 >= e13_1) and
+            macd1 >= sig1 and
+            rsi1 > 28 and rsi1 < 72 and
+            c1 >= o1
         )
-        if cond_rev_compra:
+        if cond_compra:
             senal = "call"
             tipo_nivel = "soporte"
-            fuerza = 45
-            if e13_1 > e21_1:
-                fuerza += 5
-            if vol1 >= vol_prom * 0.5:
-                fuerza += 5
+            fuerza = 40
+            if e13_1 >= e21_1: fuerza += 5
+            if hist1 > 0: fuerza += 5
+            if vol1 >= vol_prom * 0.35: fuerza += 5
 
-    # ✅ REVERSIÓN BAJISTA (VENTA) → en RESISTENCIA
+    # ✅ VENTA en RESISTENCIA
     if en_resistencia:
-        cond_rev_venta = (
-            e8_1 < e13_1 and
-            macd1 < sig1 and
-            rsi1 < 70.0 and rsi1 > 35.0 and
-            c1 < o1
+        cond_venta = (
+            (e8_1 <= e13_1) and
+            macd1 <= sig1 and
+            rsi1 < 72 and rsi1 > 28 and
+            c1 <= o1
         )
-        if cond_rev_venta:
+        if cond_venta:
             senal = "put"
             tipo_nivel = "resistencia"
-            fuerza = 45
-            if e13_1 < e21_1:
-                fuerza += 5
-            if vol1 >= vol_prom * 0.5:
-                fuerza += 5
+            fuerza = 40
+            if e13_1 <= e21_1: fuerza += 5
+            if hist1 < 0: fuerza += 5
+            if vol1 >= vol_prom * 0.35: fuerza += 5
 
     # --------------------------
-    # RETORNO FINAL
+    # RETORNO
     # --------------------------
     if senal is not None:
-        fuerza = max(0, min(fuerza, 100))
+        fuerza = max(25, min(fuerza, 100))
         return (senal, fuerza, tipo_nivel)
 
     return None
