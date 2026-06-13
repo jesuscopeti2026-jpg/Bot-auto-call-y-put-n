@@ -25,7 +25,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 EXPIRATION = 1
-BASE_AMOUNT = 91
+BASE_AMOUNT = 1
 TIMEFRAME_M1 = 60
 
 # Lista de pares OTC 24h
