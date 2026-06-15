@@ -2,7 +2,6 @@ import time
 import os
 import pandas as pd
 import logging
-import asyncio
 from threading import Thread
 from iqoptionapi.stable_api import IQ_Option
 from telegram import Bot
@@ -55,6 +54,7 @@ CUENTA_ANALISIS = 1
 # Configuración Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OFFSET = 0  # Control para no repetir mensajes
 
 # --------------------------
 # CONEXIÓN CUENTAS IQ OPTION
@@ -90,38 +90,51 @@ def conectar_ambas():
     return iq1, iq2
 
 # --------------------------
-# FUNCIONES TELEGRAM (SIN CONFLICTOS)
+# FUNCIONES TELEGRAM 100% ESTABLES SIN CONFLICTOS
 # --------------------------
 def enviar_mensaje_telegram(texto):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=texto, parse_mode="HTML", disable_notification=False)
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=texto, parse_mode="HTML")
     except TelegramError as e:
         logger.warning(f"⚠️ Telegram: {e}")
 
-async def escuchar_comandos_seguro():
-    """Método sin conflictos, limpia actualizaciones pendientes"""
-    global BOT_ACTIVO, OPERACIONES_C1, OPERACIONES_C2
+def limpiar_actualizaciones_pendientes():
+    """Elimina todas las solicitudes anteriores para evitar conflictos"""
+    global OFFSET
+    if not TELEGRAM_TOKEN:
+        return
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        # Leer y descartar mensajes antiguos
+        updates = bot.get_updates(offset=-1, timeout=1)
+        if updates:
+            OFFSET = updates[-1].update_id + 1
+        else:
+            OFFSET = 0
+        logger.info("📡 Telegram limpio, sin conflictos")
+        enviar_mensaje_telegram("🤖 Bot listo. Usa /start para operar y /stop para detener.")
+    except Exception as e:
+        logger.warning(f"⚠️ Limpieza Telegram: {e}")
+
+def escuchar_comandos():
+    """Método sincrónico, sin errores, sin conflictos"""
+    global BOT_ACTIVO, OPERACIONES_C1, OPERACIONES_C2, OFFSET
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("⚠️ Sin credenciales de Telegram")
+        logger.warning("⚠️ Sin credenciales de Telegram, funcionará sin control remoto")
         return
 
     bot = Bot(token=TELEGRAM_TOKEN)
-    # Eliminar todas las solicitudes pendientes al inicio
-    try:
-        await bot.get_updates(offset=-1, timeout=1)
-        await bot.get_updates(offset=0, timeout=1)
-        logger.info("📡 Telegram listo, sin conflictos")
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="🤖 Bot listo. Escribe /start para iniciar y /stop para detener.")
-    except Exception as e:
-        logger.warning(f"⚠️ Inicio Telegram: {e}")
+    limpiar_actualizaciones_pendientes()
 
     while True:
         try:
-            updates = await bot.get_updates(offset=None, timeout=10)
+            # Obtener solo mensajes nuevos, con timeout corto
+            updates = bot.get_updates(offset=OFFSET, timeout=10)
             for upd in updates:
+                OFFSET = upd.update_id + 1
                 if not upd.message or str(upd.message.chat_id) != str(TELEGRAM_CHAT_ID):
                     continue
                 texto = upd.message.text.strip().lower()
@@ -132,23 +145,25 @@ async def escuchar_comandos_seguro():
                         OPERACIONES_C2 = 0
                         BOT_ACTIVO = True
                         Thread(target=bucle_principal, daemon=True).start()
-                        await bot.send_message(TELEGRAM_CHAT_ID, text="✅ Bot INICIADO. Hará 15 operaciones en cada cuenta.")
+                        enviar_mensaje_telegram("✅ Bot INICIADO. Realizará 15 operaciones en cada cuenta.")
                     else:
-                        await bot.send_message(TELEGRAM_CHAT_ID, text="ℹ️ El bot ya está funcionando.")
+                        enviar_mensaje_telegram("ℹ️ El bot ya está funcionando.")
 
                 elif texto == "/stop":
                     BOT_ACTIVO = False
-                    await bot.send_message(TELEGRAM_CHAT_ID, text="⏹️ Bot DETENIDO.")
+                    enviar_mensaje_telegram("⏹️ Bot DETENIDO.")
 
-                # Actualizar offset para no repetir mensajes
-                offset = upd.update_id + 1
-                await bot.get_updates(offset=offset, timeout=1)
-
-        except Exception as e:
+        except TelegramError as e:
             # Ignorar error de conflicto y seguir intentando
-            if "Conflict" not in str(e):
+            if "Conflict" in str(e):
+                OFFSET = 0
+                time.sleep(2)
+            else:
                 logger.warning(f"⚠️ Telegram: {e}")
-        await asyncio.sleep(2)
+                time.sleep(3)
+        except Exception as e:
+            logger.warning(f"⚠️ Escucha comandos: {e}")
+            time.sleep(3)
 
 # --------------------------
 # DATOS DE MERCADO
@@ -244,7 +259,7 @@ def bucle_principal():
     while BOT_ACTIVO:
         try:
             if OPERACIONES_C1 >= MAX_OPER_C1 and OPERACIONES_C2 >= MAX_OPER_C2:
-                mensaje = "✅ ¡OBJETIVO CUMPLIDO! 15 operaciones en cada cuenta. Bot detenido."
+                mensaje = "✅ ¡OBJETIVO CUMPLIDO! 15 operaciones en cada cuenta. Bot detenido automáticamente."
                 logger.info(mensaje)
                 enviar_mensaje_telegram(mensaje)
                 BOT_ACTIVO = False
@@ -287,7 +302,7 @@ def bucle_principal():
 
             if senal_actual and SEG_INICIO <= segundos <= SEG_FIN:
                 activo, dir_final, fuerza = senal_actual
-                logger.info("🚀 Enviando operaciones...")
+                logger.info("🚀 Enviando operaciones a ambas cuentas...")
 
                 res1 = {"ok": False}
                 res2 = {"ok": False}
@@ -307,7 +322,7 @@ def bucle_principal():
             time.sleep(0.05)
 
         except Exception as e:
-            mensaje = f"💥 Error: {str(e)} | Reconectando..."
+            mensaje = f"💥 Error en el bucle: {str(e)} | Reintentando conexión..."
             logger.error(mensaje)
             enviar_mensaje_telegram(mensaje)
             iq1, iq2 = conectar_ambas()
@@ -317,4 +332,4 @@ def bucle_principal():
 # EJECUCIÓN PRINCIPAL
 # --------------------------
 if __name__ == "__main__":
-    asyncio.run(escuchar_comandos_seguro())
+    escuchar_comandos()
