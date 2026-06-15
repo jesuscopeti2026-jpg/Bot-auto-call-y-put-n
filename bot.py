@@ -22,7 +22,7 @@ MIN_FORCE = 98
 PARES = [
     "EURUSD-OTC",
     "GBPUSD-OTC",
-    "USDJPY-OTC",
+    "USDCHF-OTC",
     "EURJPY-OTC"
 ]
 
