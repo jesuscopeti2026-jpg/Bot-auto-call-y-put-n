@@ -1,70 +1,73 @@
 import numpy as np
-import pandas as pd
 
-def get_reversal_signal(df, tolerancia_nivel=0.0022, ventana_niveles=5):
-    if len(df) < ventana_niveles + 5:
+def body(c):
+    return abs(c["close"] - c["open"])
+
+def range_c(c):
+    return c["high"] - c["low"]
+
+def upper_wick(c):
+    return c["high"] - max(c["open"], c["close"])
+
+def lower_wick(c):
+    return min(c["open"], c["close"]) - c["low"]
+
+def get_reversal_signal(df):
+
+    if len(df) < 50:
         return None
 
     df = df.copy()
 
-    # Medias móviles
-    df['ema8'] = df['close'].ewm(span=8, adjust=False).mean()
-    df['ema13'] = df['close'].ewm(span=13, adjust=False).mean()
-    df['ema21'] = df['close'].ewm(span=21, adjust=False).mean()
+    # EMAs
+    df['ema5'] = df['close'].ewm(span=5).mean()
+    df['ema8'] = df['close'].ewm(span=8).mean()
+    df['ema21'] = df['close'].ewm(span=21).mean()
 
-    # Cálculo RSI para detectar SOBREVENTA
+    # RSI
     delta = df['close'].diff()
-    ganancia = delta.where(delta > 0, 0.0)
-    perdida = -delta.where(delta < 0, 0.0)
-    ganancia_media = ganancia.rolling(window=5, min_periods=1).mean()
-    perdida_media = perdida.rolling(window=5, min_periods=1).mean().replace(0, 0.001)
-    rs = ganancia_media / perdida_media
-    df['rsi'] = 100.0 - (100.0 / (1.0 + rs))
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    # MACD para confirmación de reversión
-    df['macd'] = df['ema13'] - df['ema21']
-    df['senal_macd'] = df['macd'].ewm(span=4, adjust=False).mean()
+    avg_gain = gain.rolling(6).mean()
+    avg_loss = loss.rolling(6).mean().replace(0, 0.001)
 
-    # Detectar soportes
-    def detectar_soportes(datos, ventana):
-        soportes = []
-        total = len(datos)
-        for i in range(ventana, total - ventana):
-            minimo = datos['low'].iloc[i-ventana:i+ventana+1].min()
-            if abs(datos['low'].iloc[i] - minimo) / minimo <= 0.0015:
-                soportes.append(round(minimo, 5))
-        return sorted(list(set(soportes)))
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100 - (100 / (1 + rs))
 
-    soportes = detectar_soportes(df, ventana_niveles)
+    c1 = df.iloc[-1]
+    c2 = df.iloc[-2]
 
-    try:
-        cierre = float(df['close'].iloc[-1])
-        apertura = float(df['open'].iloc[-1])
-        macd_val = float(df['macd'].iloc[-1])
-        senal_macd_val = float(df['senal_macd'].iloc[-1])
-        rsi_val = float(df['rsi'].iloc[-1])
-        volumen = float(df['volume'].iloc[-1])
-        vol_prom = float(df['volume'].iloc[-4:-1].mean()) if len(df) >= 5 else max(volumen, 1.0)
-    except Exception:
+    fuerza = body(c1) / (range_c(c1) + 1e-6)
+
+    # 🔥 SOLO VELAS FUERTES
+    if fuerza < 0.8:
         return None
 
-    en_soporte = any(abs(cierre - s) / s <= tolerancia_nivel for s in soportes)
+    # ❌ evitar manipulación
+    if upper_wick(c1) > body(c1) or lower_wick(c1) > body(c1):
+        return None
 
-    # ✅ SOLO COMPRA: SOBREVENTA + REVERSIÓN + CONFIRMACIÓN
-    senal = None
-    fuerza = 0
-    tipo = ""
+    # ❌ evitar rango
+    rango = abs(df["close"].iloc[-6] - df["close"].iloc[-1])
+    if rango < 0.0005:
+        return None
 
-    if rsi_val < 25:  # Nivel claro de sobreventa
-        if en_soporte and macd_val >= senal_macd_val and cierre > apertura:
-            senal = "call"
-            tipo = "REVERSIÓN SOBREVENTA - COMPRA"
-            fuerza = 50
-            if rsi_val < 20: fuerza += 15
-            if volumen >= vol_prom * 0.4: fuerza += 10
+    rsi = c1["rsi"]
 
-    if senal is not None:
-        fuerza = max(40, min(fuerza, 100))
-        return (senal, fuerza, tipo)
+    # ❌ agotamiento
+    if rsi > 70 or rsi < 30:
+        return None
+
+    tendencia_alcista = df['ema5'].iloc[-1] > df['ema8'].iloc[-1] > df['ema21'].iloc[-1]
+    tendencia_bajista = df['ema5'].iloc[-1] < df['ema8'].iloc[-1] < df['ema21'].iloc[-1]
+
+    # CALL
+    if tendencia_alcista and c1["close"] > c2["close"]:
+        return ("call", 98, "SNIPER TREND")
+
+    # PUT
+    if tendencia_bajista and c1["close"] < c2["close"]:
+        return ("put", 98, "SNIPER TREND")
 
     return None
