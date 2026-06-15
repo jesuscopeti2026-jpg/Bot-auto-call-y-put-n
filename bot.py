@@ -17,10 +17,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Parámetros
 MONTO = 600
 EXPIRACION = 1
-VELA_SEGUNDOS = 60
+VELA_SEG = 60
 FUERZA_MIN = 98
 REINTENTOS = 10
 ESPERA = 0.2
@@ -30,13 +29,12 @@ SEG_FIN = 59
 
 ACTIVOS = ["EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC"]
 
-# Control
 ULTIMA_VELA = None
 OP_C1 = None
 OP_C2 = None
 
 # --------------------------
-# CONEXIÓN 100% SEPARADA
+# CONEXIÓN INDEPENDIENTE
 # --------------------------
 def conectar(email, passw, nombre):
     try:
@@ -44,7 +42,7 @@ def conectar(email, passw, nombre):
         iq = IQ_Option(email, passw)
         ok, razon = iq.connect()
         if ok:
-            time.sleep(1)
+            time.sleep(1.5)
             iq.change_balance("PRACTICE")
             time.sleep(1)
             saldo = round(iq.get_balance(), 2)
@@ -59,20 +57,19 @@ def conectar(email, passw, nombre):
 
 def conectar_ambas():
     iq1, _ = conectar(os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1"), "CUENTA_1")
-    time.sleep(2)
+    time.sleep(2.5)
     iq2, _ = conectar(os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"), "CUENTA_2")
-    time.sleep(2)
     return (iq1, iq2) if (iq1 and iq2) else (None, None)
 
 # --------------------------
-# DATOS DE MERCADO
+# DATOS
 # --------------------------
 def velas(iq, activo):
     try:
         if not iq.check_connect():
             iq.connect()
-            time.sleep(0.2)
-        datos = iq.get_candles(activo, VELA_SEGUNDOS, 50, time.time())
+            time.sleep(0.3)
+        datos = iq.get_candles(activo, VELA_SEG, 50, time.time())
         if not datos or len(datos) < 30:
             return None
         df = pd.DataFrame(datos)
@@ -96,7 +93,7 @@ def orden(iq, nombre, activo, dir, vela, res):
     ok = False
     saldo = id_op = None
 
-    for i in range(REINTENTOS):
+    for _ in range(REINTENTOS):
         try:
             if not iq.check_connect():
                 iq.connect()
@@ -106,14 +103,14 @@ def orden(iq, nombre, activo, dir, vela, res):
                 continue
             estado, id_op = iq.buy(MONTO, activo, dir, EXPIRACION)
             if estado and id_op > 0:
-                time.sleep(0.4)
+                time.sleep(0.5)
                 saldo = round(iq.get_balance(), 2)
                 logger.info(f"✅ {nombre} | ID: {id_op} | Saldo: ${saldo}")
                 ok = True
                 break
             time.sleep(ESPERA)
         except Exception as e:
-            logger.warning(f"⚠️ {nombre} intento {i+1}: {e}")
+            logger.warning(f"⚠️ {nombre}: {e}")
             time.sleep(ESPERA)
 
     if ok:
@@ -136,7 +133,7 @@ def iniciar():
         return
 
     logger.info("="*60)
-    logger.info("🤖 BOT | MISMA ORDEN EN 2 CUENTAS | RAILWAY COMPATIBLE")
+    logger.info("🤖 BOT | MISMA ORDEN EN 2 CUENTAS | RAILWAY OK")
     logger.info("="*60)
 
     senal = None
