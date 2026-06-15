@@ -1,143 +1,173 @@
 import time
 import os
-import requests
 import pandas as pd
+import logging
 from iqoptionapi.stable_api import IQ_Option
+
 from strategy import get_reversal_signal
 
 # ==============================
 # CONFIG
 # ==============================
+logging.basicConfig(level=logging.INFO)
 
-EMAIL = os.getenv("IQ_EMAIL")
-PASSWORD = os.getenv("IQ_PASSWORD")
+BASE_AMOUNT = 600
+EXPIRATION = 1
+TIMEFRAME = 60
 
-RIESGO = 0.02
-EXPIRACION = 1
+ENTRY_START = 0
+ENTRY_END = 2
+MIN_FORCE = 98
 
-PARES = ["EURUSD-OTC", "GBPUSD-OTC"]
-
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# ==============================
-# TELEGRAM
-# ==============================
-
-def send(msg):
-    if TOKEN and CHAT_ID:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                data={"chat_id": CHAT_ID, "text": msg}
-            )
-        except:
-            pass
+PARES = [
+    "EURUSD-OTC",
+    "GBPUSD-OTC",
+    "USDJPY-OTC",
+    "EURJPY-OTC"
+]
 
 # ==============================
-# CONEXIÓN
+# VARIABLES
 # ==============================
-
-def connect():
-    iq = IQ_Option(EMAIL, PASSWORD)
-    iq.connect()
-    iq.change_balance("PRACTICE")
-    return iq
+CUENTAS = []
+SEÑAL = None
+ULTIMA_VELA = None
 
 # ==============================
-# DATOS
+# 🔌 CONECTAR 2 CUENTAS
 # ==============================
+def connect_accounts():
+    cuentas = []
 
+    credenciales = [
+        (os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1")),
+        (os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2")),
+    ]
+
+    for email, password in credenciales:
+        if not email or not password:
+            continue
+
+        iq = IQ_Option(email, password)
+        iq.connect()
+
+        if iq.check_connect():
+            iq.change_balance("PRACTICE")
+            print(f"✅ Conectado: {email}")
+            cuentas.append(iq)
+        else:
+            print(f"❌ Error conexión: {email}")
+
+    return cuentas
+
+# ==============================
+# 📊 DATAFRAME
+# ==============================
 def get_df(iq, par):
-    data = iq.get_candles(par, 60, 50, time.time())
-    df = pd.DataFrame(data)
-    df.rename(columns={"max": "high", "min": "low"}, inplace=True)
+    candles = iq.get_candles(par, TIMEFRAME, 50, time.time())
+    df = pd.DataFrame(candles)
+
+    df.rename(columns={
+        "max": "high",
+        "min": "low"
+    }, inplace=True)
+
     return df
 
 # ==============================
-# MONTO DINÁMICO
+# 🚀 EJECUTAR EN TODAS LAS CUENTAS
 # ==============================
+def ejecutar(cuentas, par, direccion):
+    for iq in cuentas:
+        try:
+            estado, _ = iq.buy(BASE_AMOUNT, par, direccion, EXPIRATION)
 
-def calcular_monto(iq):
-    balance = iq.get_balance()
-    return round(balance * RIESGO, 2)
+            if estado:
+                print(f"✅ {direccion.upper()} {par} ejecutado")
+            else:
+                print(f"❌ Error en {par}")
 
-# ==============================
-# 🔥 ENTRADA SNIPER
-# ==============================
-
-def esperar_confirmacion(iq, par, direccion):
-    """
-    Espera micro movimiento del precio en la dirección correcta
-    """
-
-    precio_inicial = iq.get_candles(par, 1, 1, time.time())[0]["close"]
-
-    for _ in range(10):  # ~0.5 segundos
-        time.sleep(0.05)
-
-        precio_actual = iq.get_candles(par, 1, 1, time.time())[0]["close"]
-
-        if direccion == "call" and precio_actual > precio_inicial:
-            return True
-
-        if direccion == "put" and precio_actual < precio_inicial:
-            return True
-
-    return False
+        except Exception as e:
+            print(f"💥 Error cuenta: {e}")
 
 # ==============================
-# MAIN
+# 🔁 LOOP PRINCIPAL
 # ==============================
+def run():
+    global SEÑAL, ULTIMA_VELA, CUENTAS
 
-def main():
-    iq = connect()
-    send("🎯 BOT SNIPER ACTIVADO")
+    CUENTAS = connect_accounts()
 
-    ultima_vela = None
+    if not CUENTAS:
+        print("❌ No hay cuentas conectadas")
+        return
+
+    print("🚀 BOT MULTI-CUENTA INICIADO")
 
     while True:
         try:
-            tiempo = iq.get_server_timestamp()
-            vela = int(tiempo // 60)
+            iq_ref = CUENTAS[0]  # usamos una cuenta como referencia de tiempo
 
-            # 🔥 SOLO EN APERTURA REAL
-            if vela != ultima_vela:
-                ultima_vela = vela
+            server_time = iq_ref.get_server_timestamp()
+            segundos = server_time % 60
+            vela = int(server_time // 60)
 
-                time.sleep(0.15)  # micro delay real
+            # =========================
+            # 🔍 DETECTAR SEÑAL
+            # =========================
+            if 55 <= segundos <= 58:
+                mejor = None
 
                 for par in PARES:
+                    df = get_df(iq_ref, par)
 
-                    df = get_df(iq, par)
-                    señal = get_reversal_signal(df)
+                    resultado = get_reversal_signal(df)
 
-                    if señal:
-                        tipo, fuerza, motivo = señal
+                    if resultado:
+                        direccion, fuerza, tipo = resultado
 
-                        # 🔥 CONFIRMACIÓN SNIPER
-                        confirmado = esperar_confirmacion(iq, par, tipo)
+                        if fuerza >= MIN_FORCE:
+                            mejor = (par, direccion, fuerza)
 
-                        if not confirmado:
-                            continue
+                if mejor:
+                    SEÑAL = mejor
+                    print(f"🔍 Señal detectada: {mejor}")
 
-                        monto = calcular_monto(iq)
+            # =========================
+            # 🎯 EJECUTAR SNIPER
+            # =========================
+            if (
+                SEÑAL
+                and ENTRY_START <= segundos <= ENTRY_END
+                and vela != ULTIMA_VELA
+            ):
+                ULTIMA_VELA = vela
 
-                        send(f"""🎯 SNIPER ENTRY
-Par: {par}
-Tipo: {tipo}
-Fuerza: {fuerza}
-Monto: ${monto}""")
+                par, direccion, fuerza = SEÑAL
+                SEÑAL = None
 
-                        iq.buy(monto, par, tipo, EXPIRACION)
+                # 🔁 INVERTIR SIEMPRE
+                direccion = "put" if direccion == "call" else "call"
 
-                        time.sleep(60)
+                print(f"🚀 SNIPER MULTI | {par} | {direccion} | {fuerza}")
 
-            time.sleep(0.3)
+                ejecutar(CUENTAS, par, direccion)
+
+            time.sleep(0.2)
 
         except Exception as e:
-            send(f"💥 Error: {str(e)}")
-            time.sleep(5)
+            print(f"💥 Error general: {e}")
+            time.sleep(2)
+            CUENTAS = connect_accounts()
 
+# ==============================
+# START
+# ==============================
 if __name__ == "__main__":
-    main()
+    requeridas = ["IQ_EMAIL_1","IQ_PASSWORD_1","IQ_EMAIL_2","IQ_PASSWORD_2"]
+    faltantes = [v for v in requeridas if not os.getenv(v)]
+
+    if faltantes:
+        print(f"❌ Faltan variables: {', '.join(faltantes)}")
+    else:
+        run()
