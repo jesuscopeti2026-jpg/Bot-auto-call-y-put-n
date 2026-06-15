@@ -14,7 +14,6 @@ def bearish(c):
     return c["close"] < c["open"]
 
 def get_reversal_signal(df):
-    # ✅ Corrección: comprobar si el DataFrame está vacío
     if df is None or df.empty or len(df) < 30:
         return None
     df = df.copy()
@@ -25,6 +24,7 @@ def get_reversal_signal(df):
     c1 = df.iloc[-1]
     c2 = df.iloc[-2]
     fuerza = 0
+
     if body(c1) >= range_c(c1) * 0.7:
         fuerza += 40
     if c1["close"] > c2["close"]:
@@ -37,5 +37,6 @@ def get_reversal_signal(df):
         fuerza += 20
     if body(c1) > body(c2):
         fuerza += 20
+
     fuerza = min(fuerza, 100)
     return ("call", fuerza, "ALCISTA") if bullish(c1) else ("put", fuerza, "BAJISTA") if bearish(c1) else None
