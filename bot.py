@@ -151,9 +151,11 @@ def iniciar():
             if seg == SEG_DETECCION:
                 mejor = None
                 fuerza_max = 0
+                logger.info("🔍 Buscando señales...")
                 for act in ACTIVOS:
                     df = velas(iq1, act)
-                    if not df:
+                    # ✅ Corrección: comprobar si df está vacío
+                    if df is None or df.empty:
                         continue
                     s = get_reversal_signal(df)
                     if s:
