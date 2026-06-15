@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 def body(c):
     return abs(c["close"] - c["open"])
@@ -6,68 +7,60 @@ def body(c):
 def range_c(c):
     return c["high"] - c["low"]
 
-def upper_wick(c):
-    return c["high"] - max(c["open"], c["close"])
+def bullish(c):
+    return c["close"] > c["open"]
 
-def lower_wick(c):
-    return min(c["open"], c["close"]) - c["low"]
+def bearish(c):
+    return c["close"] < c["open"]
 
 def get_reversal_signal(df):
 
-    if len(df) < 50:
+    if len(df) < 30:
         return None
 
     df = df.copy()
 
     # EMAs
     df['ema5'] = df['close'].ewm(span=5).mean()
-    df['ema8'] = df['close'].ewm(span=8).mean()
+    df['ema13'] = df['close'].ewm(span=13).mean()
     df['ema21'] = df['close'].ewm(span=21).mean()
-
-    # RSI
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(6).mean()
-    avg_loss = loss.rolling(6).mean().replace(0, 0.001)
-
-    rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
 
     c1 = df.iloc[-1]
     c2 = df.iloc[-2]
 
-    fuerza = body(c1) / (range_c(c1) + 1e-6)
+    fuerza = 0
 
-    # 🔥 SOLO VELAS FUERTES
-    if fuerza < 0.8:
-        return None
+    # =========================
+    # FUERZA VELA (CLAVE)
+    # =========================
+    if body(c1) >= range_c(c1) * 0.7:
+        fuerza += 40
 
-    # ❌ evitar manipulación
-    if upper_wick(c1) > body(c1) or lower_wick(c1) > body(c1):
-        return None
+    # MOMENTUM
+    if c1["close"] > c2["close"]:
+        fuerza += 20
 
-    # ❌ evitar rango
-    rango = abs(df["close"].iloc[-6] - df["close"].iloc[-1])
-    if rango < 0.0005:
-        return None
+    if c1["close"] < c2["close"]:
+        fuerza += 20
 
-    rsi = c1["rsi"]
+    # TENDENCIA
+    if df["ema5"].iloc[-1] > df["ema13"].iloc[-1]:
+        fuerza += 20
 
-    # ❌ agotamiento
-    if rsi > 70 or rsi < 30:
-        return None
+    if df["ema5"].iloc[-1] < df["ema13"].iloc[-1]:
+        fuerza += 20
 
-    tendencia_alcista = df['ema5'].iloc[-1] > df['ema8'].iloc[-1] > df['ema21'].iloc[-1]
-    tendencia_bajista = df['ema5'].iloc[-1] < df['ema8'].iloc[-1] < df['ema21'].iloc[-1]
+    # FILTRO EXTRA FUERTE
+    if body(c1) > body(c2):
+        fuerza += 20
 
-    # CALL
-    if tendencia_alcista and c1["close"] > c2["close"]:
-        return ("call", 98, "SNIPER TREND")
+    # =========================
+    # DIRECCIÓN
+    # =========================
+    if bullish(c1):
+        return ("call", min(fuerza, 100), "FUERTE ALCISTA")
 
-    # PUT
-    if tendencia_bajista and c1["close"] < c2["close"]:
-        return ("put", 98, "SNIPER TREND")
+    if bearish(c1):
+        return ("put", min(fuerza, 100), "FUERTE BAJISTA")
 
     return None
