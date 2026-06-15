@@ -6,7 +6,7 @@ from iqoptionapi.stable_api import IQ_Option
 
 from strategy import get_reversal_signal
 
-# Configuración de registros
+# Configuración de logs
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
@@ -14,15 +14,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ⚙️ CONFIGURACIÓN
-MONTO_POR_OPERACION = 600       # Cada operación es de este monto
+MONTO_POR_OPERACION = 600       # Monto fijo por operación
 EXPIRACION = 1                   # Vencimiento en minutos
-TIEMPO_VELA = 60                 # Temporalidad en segundos
-FUERZA_MINIMA = 98              # Fuerza mínima para operar
-REINTENTOS_MAX = 4              # Reintentos si falla
-ESPERA_REINTENTO = 0.05
-SEGUNDO_DETECCION = 56          # Momento para buscar señal
-SEGUNDO_INICIO = 57             # Inicio rango de entrada
-SEGUNDO_FIN = 59                # Fin rango de entrada
+TIEMPO_VELA = 60                 # Temporalidad 1 minuto (en segundos)
+FUERZA_MINIMA = 98               # Fuerza mínima para abrir operación
+REINTENTOS_MAX = 4               # Reintentos si falla la ejecución
+ESPERA_REINTENTO = 0.05         # Tiempo entre reintentos
+SEGUNDO_DETECCION = 56          # Segundo para buscar la señal
+SEGUNDO_INICIO = 57             # Inicio del rango de entrada
+SEGUNDO_FIN = 59                # Fin del rango de entrada
 
 # Activos a monitorear
 ACTIVOS = [
@@ -31,29 +31,29 @@ ACTIVOS = [
     "USDJPY-OTC"
 ]
 
-# Variables globales
+# Variables de control
 CUENTAS = []
 SEÑAL_ACTUAL = None
 ULTIMA_VELA_PROCESADA = None
-ULTIMA_OPERACION_CUENTA1 = None
-ULTIMA_OPERACION_CUENTA2 = None
+ULTIMA_OPERACION_C1 = None
+ULTIMA_OPERACION_C2 = None
 
 # ==============================
-# CONEXIÓN A LAS CUENTAS
+# CONEXIÓN A LAS 2 CUENTAS
 # ==============================
 def conectar_cuentas():
     cuentas = []
     credenciales = [
-        {"nombre": "CUENTA_1", "email": os.getenv("IQ_EMAIL_1"), "password": os.getenv("IQ_PASSWORD_1")},
-        {"nombre": "CUENTA_2", "email": os.getenv("IQ_EMAIL_2"), "password": os.getenv("IQ_PASSWORD_2")}
+        ("CUENTA_1", os.getenv("IQ_EMAIL_1"), os.getenv("IQ_PASSWORD_1")),
+        ("CUENTA_2", os.getenv("IQ_EMAIL_2"), os.getenv("IQ_PASSWORD_2"))
     ]
 
-    for datos in credenciales:
-        if not datos["email"] or not datos["password"]:
-            logger.error(f"{datos['nombre']}: Faltan credenciales")
+    for nombre, email, password in credenciales:
+        if not email or not password:
+            logger.error(f"{nombre}: Faltan credenciales")
             continue
 
-        iq = IQ_Option(datos["email"], datos["password"])
+        iq = IQ_Option(email, password)
         conectado, motivo = iq.connect()
 
         if conectado:
@@ -62,17 +62,17 @@ def conectar_cuentas():
                 time.sleep(0.1)
                 saldo = iq.get_balance()
                 if saldo >= MONTO_POR_OPERACION:
-                    logger.info(f"✅ {datos['nombre']} conectada | Saldo: ${saldo:.2f}")
-                    cuentas.append({"nombre": datos["nombre"], "conexion": iq})
+                    logger.info(f"✅ {nombre} conectada | Saldo: ${saldo:.2f}")
+                    cuentas.append( (nombre, iq) )
                 else:
-                    logger.error(f"❌ {datos['nombre']}: Saldo insuficiente (${saldo:.2f})")
+                    logger.error(f"❌ {nombre}: Saldo insuficiente (${saldo:.2f})")
             except Exception as e:
-                logger.error(f"⚠️ {datos['nombre']}: Conectada pero error al verificar saldo: {e}")
+                logger.error(f"⚠️ {nombre}: Conectada, error al verificar saldo: {e}")
         else:
-            logger.error(f"❌ {datos['nombre']}: No se pudo conectar | Motivo: {motivo}")
+            logger.error(f"❌ {nombre}: No conectó | Motivo: {motivo}")
 
     if len(cuentas) != 2:
-        logger.critical(f"⚠️ Solo {len(cuentas)} cuentas activas. Se requieren exactamente 2")
+        logger.critical("⚠️ Se requieren 2 cuentas conectadas para operar")
     return cuentas
 
 # ==============================
@@ -94,38 +94,38 @@ def obtener_datos(iq, activo):
         return df
 
     except Exception as e:
-        logger.error(f"⚠️ Error obteniendo datos de {activo}: {e}")
+        logger.error(f"⚠️ Error en {activo}: {e}")
         return None
 
 # ==============================
 # EJECUTAR OPERACIÓN EN UNA CUENTA
 # ==============================
-def ejecutar_operacion(nombre_cuenta, conexion, activo, direccion):
+def ejecutar(nombre, iq, activo, direccion):
     for intento in range(REINTENTOS_MAX):
         try:
-            if not conexion.check_connect():
-                conexion.connect()
+            if not iq.check_connect():
+                iq.connect()
                 time.sleep(0.03)
 
-            estado, id_operacion = conexion.buy(MONTO_POR_OPERACION, activo, direccion, EXPIRACION)
-            if estado and id_operacion > 0:
-                logger.info(f"✅ {nombre_cuenta} | Ejecutado | {activo} | {direccion} | Intento {intento+1}")
+            estado, id_op = iq.buy(MONTO_POR_OPERACION, activo, direccion, EXPIRACION)
+            if estado and id_op > 0:
+                logger.info(f"✅ {nombre} | {activo} | {direccion} | Intento {intento+1}")
                 return True
             time.sleep(ESPERA_REINTENTO)
 
         except Exception as e:
-            logger.warning(f"⚠️ {nombre_cuenta} | Intento {intento+1} fallido: {str(e)}")
+            logger.warning(f"⚠️ {nombre} | Intento {intento+1} fallido: {e}")
             time.sleep(ESPERA_REINTENTO)
 
-    logger.error(f"❌ {nombre_cuenta} | No se pudo ejecutar {activo} tras {REINTENTOS_MAX} intentos")
+    logger.error(f"❌ {nombre} | No se pudo ejecutar {activo}")
     return False
 
 # ==============================
-# BUCLE PRINCIPAL DEL BOT
+# BUCLE PRINCIPAL
 # ==============================
 def iniciar_bot():
     global SEÑAL_ACTUAL, ULTIMA_VELA_PROCESADA, CUENTAS
-    global ULTIMA_OPERACION_CUENTA1, ULTIMA_OPERACION_CUENTA2
+    global ULTIMA_OPERACION_C1, ULTIMA_OPERACION_C2
 
     CUENTAS = conectar_cuentas()
     if len(CUENTAS) != 2:
@@ -135,75 +135,65 @@ def iniciar_bot():
 
     while True:
         try:
-            # Usamos la primera cuenta como referencia de tiempo
-            iq_referencia = CUENTAS[0]["conexion"]
-            tiempo_servidor = iq_referencia.get_server_timestamp()
+            _, iq_ref = CUENTAS[0]
+            tiempo_servidor = iq_ref.get_server_timestamp()
             segundos = int(tiempo_servidor % 60)
             vela_actual = int(tiempo_servidor // 60)
 
-            # --------------------------
-            # PASO 1: Detectar señal en segundo 56
-            # --------------------------
+            # Detectar señal en segundo 56
             if segundos == SEGUNDO_DETECCION:
-                mejor_señal = None
+                mejor = None
                 mayor_fuerza = 0
-
                 for activo in ACTIVOS:
-                    df = obtener_datos(iq_referencia, activo)
+                    df = obtener_datos(iq_ref, activo)
                     if df is None:
                         continue
-
-                    resultado = get_reversal_signal(df)
-                    if resultado:
-                        direccion, fuerza, tipo = resultado
+                    res = get_reversal_signal(df)
+                    if res:
+                        dir_, fuerza, _ = res
                         if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
                             mayor_fuerza = fuerza
-                            mejor_señal = (activo, direccion, fuerza)
-
-                SEÑAL_ACTUAL = mejor_señal
+                            mejor = (activo, dir_, fuerza)
+                SEÑAL_ACTUAL = mejor
                 if SEÑAL_ACTUAL:
-                    logger.info(f"🔍 Señal detectada: {SEÑAL_ACTUAL}")
+                    logger.info(f"🔍 Señal: {SEÑAL_ACTUAL}")
 
-            # --------------------------
-            # PASO 2: Ejecutar solo 1 vez por cuenta, sin duplicar
-            # --------------------------
+            # Ejecutar solo 1 vez por cuenta y por vela
             if SEÑAL_ACTUAL and SEGUNDO_INICIO <= segundos <= SEGUNDO_FIN and vela_actual != ULTIMA_VELA_PROCESADA:
                 ULTIMA_VELA_PROCESADA = vela_actual
-                activo, direccion_original, fuerza = SEÑAL_ACTUAL
+                activo, dir_ori, fuerza = SEÑAL_ACTUAL
                 SEÑAL_ACTUAL = None
 
-                # Aplicamos la lógica de inversión que usas
-                direccion_final = "put" if direccion_original == "call" else "call"
-                logger.info(f"🎯 ENTRADA | Activo: {activo} | Dirección: {direccion_final} | Fuerza: {fuerza}")
+                # Aplicar inversión de dirección
+                dir_final = "put" if dir_ori == "call" else "call"
+                logger.info(f"🎯 ENTRADA | {activo} | {dir_final} | Fuerza: {fuerza}")
 
-                # ✅ CONTROL ESTRICTO: 1 operación por cuenta, no más
                 ok1 = False
                 ok2 = False
 
-                if ULTIMA_OPERACION_CUENTA1 != vela_actual:
-                    ok1 = ejecutar_operacion(CUENTAS[0]["nombre"], CUENTAS[0]["conexion"], activo, direccion_final)
+                if ULTIMA_OPERACION_C1 != vela_actual:
+                    ok1 = ejecutar(CUENTAS[0][0], CUENTAS[0][1], activo, dir_final)
                     if ok1:
-                        ULTIMA_OPERACION_CUENTA1 = vela_actual
+                        ULTIMA_OPERACION_C1 = vela_actual
 
-                if ULTIMA_OPERACION_CUENTA2 != vela_actual:
-                    ok2 = ejecutar_operacion(CUENTAS[1]["nombre"], CUENTAS[1]["conexion"], activo, direccion_final)
+                if ULTIMA_OPERACION_C2 != vela_actual:
+                    ok2 = ejecutar(CUENTAS[1][0], CUENTAS[1][1], activo, dir_final)
                     if ok2:
-                        ULTIMA_OPERACION_CUENTA2 = vela_actual
+                        ULTIMA_OPERACION_C2 = vela_actual
 
-                # Resumen final
                 if ok1 and ok2:
-                    logger.info("✅ AMBAS CUENTAS EJECUTADAS CORRECTAMENTE")
+                    logger.info("✅ AMBAS CUENTAS EJECUTADAS")
                 elif ok1:
-                    logger.warning("⚠️ Solo CUENTA 1 ejecutó, CUENTA 2 falló")
+                    logger.warning("⚠️ Solo Cuenta 1 ejecutó")
                 elif ok2:
-                    logger.warning("⚠️ Solo CUENTA 2 ejecutó, CUENTA 1 falló")
+                    logger.warning("⚠️ Solo Cuenta 2 ejecutó")
                 else:
-                    logger.error("❌ Ninguna cuenta ejecutó la operación")
+                    logger.error("❌ Ninguna cuenta ejecutó")
 
             time.sleep(0.02)
 
         except Exception as e:
-            logger.error(f"💥 Error en el bucle principal: {str(e)}")
+            logger.error(f"💥 Error en bucle: {e}")
             time.sleep(1)
             CUENTAS = conectar_cuentas()
 
