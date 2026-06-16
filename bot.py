@@ -7,7 +7,7 @@ import sys
 try:
     from iqoptionapi.stable_api import IQ_Option
 except ImportError:
-    print("❌ Instala dependencias: pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git")
+    print("❌ Instala: pip install git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git")
     sys.exit(1)
 
 try:
@@ -57,6 +57,7 @@ OPERACIONES = 0
 BOT_ACTIVO = True
 ULTIMA_VELA = None
 YA_EJECUTADO = {}
+mejor_senal = None
 
 # --------------------------
 # NOTIFICACIONES
@@ -74,7 +75,7 @@ def enviar_telegram(texto):
 # --------------------------
 def conectar_cuenta():
     if not IQ_EMAIL or not IQ_PASSWORD:
-        logger.error("❌ Faltan credenciales de la cuenta")
+        logger.error("❌ Faltan credenciales")
         return None, 0.0
     for intento in range(10):
         try:
@@ -82,9 +83,9 @@ def conectar_cuenta():
             ok, motivo = iq.connect()
             if ok:
                 time.sleep(0.5)
-                iq.change_balance("PRACTICE") # ⚠️ Cambia a "REAL" si usas dinero real
+                iq.change_balance("PRACTICE") # Cambia a "REAL" si usas dinero real
                 saldo = round(iq.get_balance(), 2)
-                logger.info(f"✅ Cuenta conectada | Saldo: ${saldo}")
+                logger.info(f"✅ Conectado | Saldo: ${saldo}")
                 enviar_telegram(f"✅ BOT LISTO\n💵 Saldo: ${saldo}")
                 return iq, saldo
             else:
@@ -142,21 +143,20 @@ def obtener_velas(activo):
         df[["open","close","high","low"]] = df[["open","close","high","low"]].astype(float)
         return df
     except Exception as e:
-        logger.warning(f"Error obteniendo velas: {e}")
+        logger.warning(f"Error velas {activo}: {e}")
         return None
 
 # --------------------------
 # BUCLE PRINCIPAL
 # --------------------------
 def bucle_principal():
-    global BOT_ACTIVO, ULTIMA_VELA, OPERACIONES
+    global BOT_ACTIVO, ULTIMA_VELA, OPERACIONES, IQ, mejor_senal
     logger.info("🚀 BOT ACTIVO - Solo 1 cuenta")
 
     while BOT_ACTIVO:
         try:
             if not IQ or not IQ.check_connect():
                 logger.warning("⚠️ Reconectando...")
-                global IQ
                 IQ, _ = conectar_cuenta()
                 time.sleep(1)
                 continue
@@ -166,14 +166,12 @@ def bucle_principal():
             vela_actual = int(ts // 60)
             vela_cerrada = vela_actual - 1
 
-            # Detener al llegar al límite
             if OPERACIONES >= MAX_OPER:
                 saldo_final = round(IQ.get_balance(), 2)
                 enviar_telegram(f"✅ SESION FINALIZADA\n📊 Operaciones: {OPERACIONES}\n💵 Saldo final: ${saldo_final}")
                 BOT_ACTIVO = False
                 break
 
-            # Analizar nueva vela
             if vela_cerrada != ULTIMA_VELA:
                 ULTIMA_VELA = vela_cerrada
                 YA_EJECUTADO.clear()
@@ -195,7 +193,6 @@ def bucle_principal():
                     activo, direccion, fuerza = mejor_senal
                     enviar_telegram(f"📊 SEÑAL\n📌 {activo} | {direccion.upper()} | 💪 {fuerza}%")
 
-            # Ejecutar orden
             if mejor_senal and SEG_INICIO <= segundos <= SEG_FIN:
                 activo, direccion, fuerza = mejor_senal
                 ok, id_op, saldo = ejecutar_orden(activo, direccion, vela_actual)
