@@ -2,12 +2,13 @@ import numpy as np
 import pandas as pd
 
 def body(c):
-    """Tamaño real de la vela"""
+    """Tamaño del cuerpo de la vela"""
     return abs(c["close"] - c["open"])
 
 def range_c(c):
     """Rango total de la vela"""
-    return c["high"] - c["low"] if (c["high"] - c["low"]) != 0 else 0.0001
+    r = c["high"] - c["low"]
+    return r if r != 0 else 0.0001
 
 def bullish(c):
     """Vela alcista"""
@@ -18,22 +19,23 @@ def bearish(c):
     return c["close"] < c["open"]
 
 def get_reversal_signal(df):
-    """Estrategia mejorada con cálculo de fuerza más claro"""
+    """Estrategia evaluada solo cuando la vela está cerrada"""
     if df is None or df.empty or len(df) < 30:
         return None
 
     df = df.copy()
-    # Indicadores
+
+    # Cálculo de indicadores
     df["ema5"] = df["close"].ewm(span=5, adjust=False).mean()
     df["ema13"] = df["close"].ewm(span=13, adjust=False).mean()
     df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
 
-    c1 = df.iloc[-1]   # Vela actual
+    c1 = df.iloc[-1]   # Última vela (ya cerrada)
     c2 = df.iloc[-2]   # Vela anterior
 
     fuerza = 0
 
-    # Reglas de fuerza
+    # Reglas para calcular fuerza de la señal
     if body(c1) / range_c(c1) >= 0.6:
         fuerza += 25
     if bullish(c1) and c1["close"] > c2["high"]:
@@ -49,6 +51,7 @@ def get_reversal_signal(df):
 
     fuerza = min(fuerza, 100)
 
+    # Devolver señal válida
     if bullish(c1):
         return ("call", fuerza, "ALCISTA")
     elif bearish(c1):
