@@ -17,12 +17,15 @@ def bearish(c):
 def get_reversal_signal(df):
     if df is None or df.empty or len(df) < 30:
         return None
+
     df = df.copy()
     df["ema5"] = df["close"].ewm(span=5, adjust=False).mean()
     df["ema13"] = df["close"].ewm(span=13, adjust=False).mean()
     df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
+
     c1 = df.iloc[-1]
     c2 = df.iloc[-2]
+
     fuerza = 0
     if body(c1) / range_c(c1) >= 0.6:
         fuerza += 25
@@ -36,7 +39,9 @@ def get_reversal_signal(df):
         fuerza += 20
     if body(c1) > body(c2):
         fuerza += 15
+
     fuerza = min(fuerza, 100)
+
     if bullish(c1):
         return ("call", fuerza, "ALCISTA")
     elif bearish(c1):
