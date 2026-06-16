@@ -17,7 +17,6 @@ def bearish(c):
 def get_reversal_signal(df):
     if df is None or df.empty or len(df) < 30:
         return None
-
     df = df.copy()
     df["ema5"] = df["close"].ewm(span=5, adjust=False).mean()
     df["ema13"] = df["close"].ewm(span=13, adjust=False).mean()
@@ -46,5 +45,4 @@ def get_reversal_signal(df):
         return ("call", fuerza, "ALCISTA")
     elif bearish(c1):
         return ("put", fuerza, "BAJISTA")
-    else:
-        return None
+    return None
