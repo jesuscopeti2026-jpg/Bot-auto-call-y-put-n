@@ -26,6 +26,8 @@ FUERZA_MIN = 98
 REINTENTOS = 5
 ESPERA = 0.2
 MAX_DESFASE_PERMITIDO = 1
+REINTENTOS_CONEXION = 10  # ✅ Reintentos automáticos para conectar
+ESPERA_REINTENTO = 3      # ✅ Espera entre intentos
 
 # Tiempos sincronizados
 SEG_CONEXION = 53
@@ -76,21 +78,8 @@ def enviar_telegram(texto):
     except Exception as e:
         logger.error(f"❌ Error enviando a Telegram: {str(e)}")
 
-def escuchar_comandos():
-    global BOT_ACTIVO, OPERACIONES_C1, OPERACIONES_C2, YA_OPERO, ULTIMA_VELA
-    logger.info("🤖 Bot iniciado, modo sin conflictos activo")
-    enviar_telegram("🤖 BOT LISTO ✅\n\n📌 Comandos:\n/start → Conectar y empezar a operar\n/stop → Detener y desconectar")
-
-    # Método SIN get_updates para evitar conflictos
-    while True:
-        try:
-            time.sleep(30)
-        except Exception as e:
-            logger.error(f"⚠️ Bucle de comandos: {str(e)}")
-            time.sleep(5)
-
 # --------------------------
-# CONEXIÓN DE CUENTAS
+# CONEXIÓN DE CUENTAS CON REINTENTOS
 # --------------------------
 def conectar_cuenta(email, contraseña, nombre):
     try:
@@ -104,7 +93,8 @@ def conectar_cuenta(email, contraseña, nombre):
         if conectado:
             time.sleep(0.5)
             iq.change_balance("PRACTICE")
-            saldo = round(iq.get_balance(), 2)
+            saldo = iq.get_balance()
+            saldo = round(saldo, 2) if saldo is not None else 0  # ✅ Evita error con None
             logger.info(f"✅ {nombre} conectado | Saldo: ${saldo}")
             return iq, saldo
         else:
@@ -117,33 +107,47 @@ def conectar_cuenta(email, contraseña, nombre):
 def conectar_ambas_cuentas():
     global IQ1, IQ2
     enviar_telegram("🔄 CONECTANDO AMBAS CUENTAS...")
-    res1 = {}
-    res2 = {}
+    intento = 0
 
-    hilo1 = Thread(target=lambda: res1.update(dict(zip(["iq", "saldo"], conectar_cuenta(IQ_EMAIL_1, IQ_PASSWORD_1, "CUENTA 1")))))
-    hilo2 = Thread(target=lambda: res2.update(dict(zip(["iq", "saldo"], conectar_cuenta(IQ_EMAIL_2, IQ_PASSWORD_2, "CUENTA 2")))))
+    # ✅ Bucle de reintentos hasta conectar ambas
+    while intento < REINTENTOS_CONEXION:
+        intento += 1
+        logger.info(f"🔁 Intento de conexión {intento}/{REINTENTOS_CONEXION}")
 
-    hilo1.start()
-    hilo2.start()
-    hilo1.join()
-    hilo2.join()
+        res1 = {}
+        res2 = {}
 
-    IQ1 = res1.get("iq")
-    IQ2 = res2.get("iq")
-    saldo1 = res1.get("saldo", 0)
-    saldo2 = res2.get("saldo", 0)
+        hilo1 = Thread(target=lambda: res1.update(dict(zip(["iq", "saldo"], conectar_cuenta(IQ_EMAIL_1, IQ_PASSWORD_1, "CUENTA 1")))))
+        hilo2 = Thread(target=lambda: res2.update(dict(zip(["iq", "saldo"], conectar_cuenta(IQ_EMAIL_2, IQ_PASSWORD_2, "CUENTA 2")))))
 
-    if IQ1 and IQ2:
-        enviar_telegram(
-            f"✅ CONEXIÓN EXITOSA\n"
-            f"🔹 Cuenta 1: ${saldo1}\n"
-            f"🔹 Cuenta 2: ${saldo2}\n"
-            f"🚀 Analizando señales..."
-        )
-        return True
-    else:
-        enviar_telegram("❌ No se pudo conectar una o ambas cuentas")
-        return False
+        hilo1.start()
+        hilo2.start()
+        hilo1.join()
+        hilo2.join()
+
+        IQ1 = res1.get("iq")
+        IQ2 = res2.get("iq")
+        saldo1 = res1.get("saldo", 0)
+        saldo2 = res2.get("saldo", 0)
+
+        if IQ1 and IQ2:
+            enviar_telegram(
+                f"✅ CONEXIÓN EXITOSA DESPUÉS DE {intento} INTENTO(S)\n"
+                f"🔹 Cuenta 1: ${saldo1}\n"
+                f"🔹 Cuenta 2: ${saldo2}\n"
+                f"🚀 Analizando señales..."
+            )
+            return True
+        else:
+            faltan = []
+            if not IQ1: faltan.append("Cuenta 1")
+            if not IQ2: faltan.append("Cuenta 2")
+            logger.warning(f"⚠️ No conectó: {', '.join(faltan)}. Reintentando en {ESPERA_REINTENTO}s...")
+            time.sleep(ESPERA_REINTENTO)
+
+    # Si se agotan los intentos
+    enviar_telegram(f"❌ NO SE PUDO CONECTAR DESPUÉS DE {REINTENTOS_CONEXION} INTENTOS")
+    return False
 
 def desconectar_ambas_cuentas():
     global IQ1, IQ2
@@ -202,7 +206,8 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela, resultado):
             ok, id_op = iq.buy(MONTO, activo, dir_final, EXPIRACION)
             if ok and id_op > 0:
                 time.sleep(0.3)
-                saldo = round(iq.get_balance(), 2)
+                saldo_bruto = iq.get_balance()
+                saldo = round(saldo_bruto, 2) if saldo_bruto is not None else 0
                 exito = True
                 logger.info(f"✅ {nombre} | ID: {id_op} | {dir_final.upper()} | Saldo: ${saldo}")
                 break
@@ -232,10 +237,13 @@ def bucle_principal():
 
     while BOT_ACTIVO:
         try:
+            # ✅ Si se pierde conexión, reintenta automáticamente
             if not IQ1 or not IQ2:
-                enviar_telegram("❌ Conexión perdida. Deteniendo...")
-                BOT_ACTIVO = False
-                break
+                logger.warning("⚠️ Conexión perdida, reintentando...")
+                if not conectar_ambas_cuentas():
+                    BOT_ACTIVO = False
+                    break
+                continue
 
             ts_servidor = IQ1.get_server_timestamp()
             segundos = ts_servidor % 60
@@ -318,14 +326,19 @@ def bucle_principal():
 # INICIO
 # --------------------------
 if __name__ == "__main__":
-    # Limpiamos cualquier conflicto previo al iniciar
+    # Limpieza de conflictos previos
     try:
-        Bot(token=TELEGRAM_TOKEN).delete_webhook(drop_pending_updates=True)
+        if TELEGRAM_TOKEN:
+            Bot(token=TELEGRAM_TOKEN).delete_webhook(drop_pending_updates=True)
     except:
         pass
-    Thread(target=escuchar_comandos, daemon=True).start()
-    time.sleep(2)
-    # Iniciamos automáticamente para evitar comandos manuales
+
+    logger.info("🤖 Bot iniciado, modo sin conflictos activo")
+    enviar_telegram("🤖 BOT LISTO ✅\n🔄 Intentando conectar cuentas automáticamente...")
+
+    # Inicio automático con reintentos
     if conectar_ambas_cuentas():
         BOT_ACTIVO = True
         Thread(target=bucle_principal, daemon=True).start()
+    else:
+        enviar_telegram("❌ No se pudo iniciar. Revisa credenciales.")
