@@ -57,7 +57,7 @@ MAX_OPER = 20
 OPERACIONES_C1 = 0
 OPERACIONES_C2 = 0
 
-BOT_ACTIVO = True  # Lo activamos directamente
+BOT_ACTIVO = True
 ULTIMA_VELA_CERRADA = None
 SEÑAL_PENDIENTE = None
 YA_OPERO = {}
@@ -148,7 +148,7 @@ def conectar_ambas():
     return True
 
 # --------------------------
-# OBTENER VELAS
+# OBTENER VELAS (CORREGIDO)
 # --------------------------
 def obtener_velas_cerradas(iq, activo):
     try:
@@ -171,7 +171,7 @@ def obtener_velas_cerradas(iq, activo):
 # --------------------------
 def ejecutar_orden(iq, nombre, activo, direccion, vela_id, res):
     clave = f"{nombre}_{vela_id}"
-    if YA_OPERO.get(clave):
+    if YA_OPERO.get(clave, False):
         res["ok"] = False
         res["razon"] = "Ya operó"
         return
@@ -190,7 +190,7 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela_id, res):
                 saldo_final = obtener_saldo_actualizado(iq)
                 YA_OPERO[clave] = True
                 res.update({"ok":True, "id":id_op, "saldo":saldo_final})
-                logger.info(f"✅ {nombre} | {activo} | {direccion} | ID: {id_op}")
+                logger.info(f"✅ {nombre} | {activo} | {direccion.upper()} | ID: {id_op}")
                 return
             time.sleep(ESPERA)
         except Exception as e:
@@ -200,7 +200,7 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela_id, res):
     res["razon"] = "No ejecutado"
 
 # --------------------------
-# BUCLE PRINCIPAL (CORREGIDO SIN REINICIOS)
+# BUCLE PRINCIPAL (ERROR SOLUCIONADO)
 # --------------------------
 def bucle_principal():
     global BOT_ACTIVO, ULTIMA_VELA_CERRADA, SEÑAL_PENDIENTE, OPERACIONES_C1, OPERACIONES_C2
@@ -238,7 +238,8 @@ def bucle_principal():
                 fuerza_max = 0
                 for activo in ACTIVOS:
                     df = obtener_velas_cerradas(IQ1, activo)
-                    if not df:
+                    # ✅ AQUÍ ESTÁ LA CORRECCIÓN: usamos .empty
+                    if df is None or df.empty:
                         continue
                     senal = get_reversal_signal(df)
                     if senal:
@@ -282,7 +283,6 @@ def bucle_principal():
 
                 SEÑAL_PENDIENTE = None
 
-            # Espera corta para no saturar
             time.sleep(0.3)
 
         except Exception as e:
