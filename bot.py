@@ -9,7 +9,7 @@ from telegram.error import TelegramError
 from strategy import get_reversal_signal
 
 # --------------------------
-# CONFIGURACIÓN AJUSTADA
+# CONFIGURACIÓN MEJORADA
 # --------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -18,22 +18,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ MONTO AJUSTADO AL SALDO DE PRÁCTICA
-MONTO = 100
-EXPIRACION = 1
-VELA = 60
-# ✅ FUERZA MÁS ACCESIBLE PARA QUE APAREZCAN SEÑALES
-FUERZA_MIN = 75
+# Parámetros ajustados para operar seguro
+MONTO = 100                # Igual al saldo de práctica
+EXPIRACION = 1             # Vencimiento en minutos
+VELA = 60                  # Marco de tiempo en segundos
+FUERZA_MIN = 70            # Fuerza más accesible, pero confiable
 REINTENTOS = 5
 ESPERA = 0.2
 REINTENTOS_POR_CUENTA = 15
 ESPERA_REINTENTO = 2
 
-# ✅ TIEMPOS SINCRONIZADOS CON EL SERVIDOR
-SEG_DETECCION = 52
-SEG_INICIO = 54
-SEG_FIN = 58
+# Tiempos sincronizados con margen amplio
+SEG_INICIO_BUSQUEDA = 50   # Empezar a buscar a los 50s
+SEG_FIN_BUSQUEDA = 56      # Dejar de buscar a los 56s
+SEG_INICIO_ENTRADA = 54    # Entrar desde el segundo 54
+SEG_FIN_ENTRADA = 58       # Cerrar ventana de entrada
 
+# Lista de activos con sufijo correcto
 ACTIVOS = [
     "EURUSD-OTC",
     "GBPUSD-OTC",
@@ -66,15 +67,17 @@ IQ_PASSWORD_2 = os.getenv("IQ_PASSWORD_2", "")
 # --------------------------
 def enviar_telegram(texto):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("⚠️ Faltan credenciales de Telegram")
         return
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
         bot.send_message(chat_id=int(TELEGRAM_CHAT_ID), text=texto, parse_mode="HTML")
+        logger.info(f"📤 Notificación enviada: {texto[:60]}...")
     except Exception as e:
-        logger.error(f"Telegram: {e}")
+        logger.error(f"❌ Error Telegram: {str(e)}")
 
 # --------------------------
-# SALDO CORRECTO
+# OBTENER SALDO REAL
 # --------------------------
 def obtener_saldo_actualizado(iq):
     for _ in range(5):
@@ -91,7 +94,7 @@ def obtener_saldo_actualizado(iq):
     return 0.0
 
 # --------------------------
-# CONEXIÓN
+# CONEXIÓN DE CUENTAS
 # --------------------------
 def conectar_cuenta(email, password, nombre):
     for intento in range(REINTENTOS_POR_CUENTA):
@@ -132,29 +135,32 @@ def conectar_ambas():
         f"✅ AMBAS CUENTAS CONECTADAS\n"
         f"🔹 Cuenta 1: ${saldo1}\n"
         f"🔹 Cuenta 2: ${saldo2}\n"
-        f"🚀 BUSCANDO SEÑALES Y OPERANDO..."
+        f"🚀 INICIANDO ANÁLISIS CONTINUO..."
     )
     return True
 
 # --------------------------
-# DATOS DE MERCADO
+# OBTENER VELAS Y VALIDAR
 # --------------------------
 def obtener_velas(iq, activo):
     try:
         if not iq or not iq.check_connect():
+            logger.warning(f"⚠️ Sin conexión para {activo}")
             return None
         velas = iq.get_candles(activo, VELA, 50, time.time())
         if not velas or len(velas) < 30:
+            logger.debug(f"ℹ️ {activo}: No hay suficientes velas")
             return None
         df = pd.DataFrame(velas)
         df.rename(columns={"max": "high", "min": "low"}, inplace=True)
         df[["open", "close", "high", "low"]] = df[["open", "close", "high", "low"]].astype(float)
         return df
-    except:
+    except Exception as e:
+        logger.warning(f"⚠️ Error obteniendo velas de {activo}: {str(e)}")
         return None
 
 # --------------------------
-# EJECUTAR ORDEN
+# EJECUTAR ORDEN EN AMBAS
 # --------------------------
 def ejecutar_orden(iq, nombre, activo, direccion, vela, resultado):
     clave = f"{nombre}_{vela}"
@@ -172,18 +178,17 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela, resultado):
             if not iq.check_connect():
                 iq.connect()
                 time.sleep(0.2)
-            # ✅ Verificar saldo antes de comprar
             saldo_actual = obtener_saldo_actualizado(iq)
             if saldo_actual < MONTO:
                 resultado["ok"] = False
-                resultado["razon"] = f"Saldo insuficiente: ${saldo_actual} < ${MONTO}"
+                resultado["razon"] = f"Saldo insuficiente: ${saldo_actual}"
                 return
             ok, id_op = iq.buy(MONTO, activo, dir_final, EXPIRACION)
             if ok and id_op > 0:
                 time.sleep(0.5)
                 saldo_actual = obtener_saldo_actualizado(iq)
                 exito = True
-                logger.info(f"✅ {nombre} | ID: {id_op} | {dir_final.upper()} | Saldo: ${saldo_actual}")
+                logger.info(f"✅ {nombre} | {activo} | {dir_final.upper()} | ID: {id_op} | Saldo: ${saldo_actual}")
                 break
             time.sleep(ESPERA)
         except Exception as e:
@@ -204,15 +209,16 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela, resultado):
         resultado["razon"] = "No se pudo ejecutar"
 
 # --------------------------
-# BUCLE PRINCIPAL
+# BUCLE PRINCIPAL CON REGISTROS DETALLADOS
 # --------------------------
 def bucle_principal():
     global BOT_ACTIVO, ULTIMA_VELA, OPERACIONES_C1, OPERACIONES_C2, IQ1, IQ2
 
-    logger.info("🔁 Iniciando ciclo de operaciones...")
+    logger.info("🔁 BUCLE DE OPERACIONES INICIADO")
 
     while BOT_ACTIVO:
         try:
+            # Verificar conexión
             if not IQ1 or not IQ2 or not IQ1.check_connect() or not IQ2.check_connect():
                 logger.warning("⚠️ Conexión perdida, reconectando...")
                 if not conectar_ambas():
@@ -224,6 +230,7 @@ def bucle_principal():
             segundos = ts_servidor % 60
             vela_actual = ts_servidor // 60
 
+            # Fin de operaciones
             if OPERACIONES_C1 >= MAX_OPER or OPERACIONES_C2 >= MAX_OPER:
                 saldo1_final = obtener_saldo_actualizado(IQ1)
                 saldo2_final = obtener_saldo_actualizado(IQ2)
@@ -235,40 +242,49 @@ def bucle_principal():
                 BOT_ACTIVO = False
                 break
 
+            # Nueva vela
             if vela_actual != ULTIMA_VELA:
                 ULTIMA_VELA = vela_actual
                 YA_OPERO.clear()
-                logger.info(f"🔄 Nueva vela iniciada: {vela_actual} | Buscando señales...")
+                logger.info(f"🔄 Nueva vela: {vela_actual} | Hora servidor: {segundos}s")
 
+            # Buscar señales
             senal = None
-            if SEG_DETECCION <= segundos <= SEG_INICIO:
+            if SEG_INICIO_BUSQUEDA <= segundos <= SEG_FIN_BUSQUEDA:
+                logger.info(f"🔍 Buscando señales entre {SEG_INICIO_BUSQUEDA}s y {SEG_FIN_BUSQUEDA}s...")
                 mejor_senal = None
                 fuerza_max = 0
+
                 for act in ACTIVOS:
                     df = obtener_velas(IQ1, act)
-                    if not df:
+                    if df is None:
                         continue
-                    sig = get_reversal_signal(df)
-                    if sig:
-                        d, f, _ = sig
-                        if f >= FUERZA_MIN and f > fuerza_max:
-                            fuerza_max = f
-                            mejor_senal = (act, d, f)
-                if mejor_senal:
-                    act, d, f = mejor_senal
-                    senal = (act, d, f)
-                    logger.info(f"🔔 SEÑAL DETECTADA: {act} | {d.upper()} | Fuerza: {f}%")
-                    enviar_telegram(f"🔔 SEÑAL DETECTADA\n📈 Activo: {act}\n➡️ Dirección: {d.upper()}\n💪 Fuerza: {f}%")
+                    resultado_senal = get_reversal_signal(df)
+                    if resultado_senal:
+                        direccion, fuerza, tipo = resultado_senal
+                        logger.info(f"ℹ️ {act}: {direccion.upper()} | Fuerza: {fuerza}%")
+                        if fuerza >= FUERZA_MIN and fuerza > fuerza_max:
+                            fuerza_max = fuerza
+                            mejor_senal = (act, direccion, fuerza)
 
-            if senal and SEG_INICIO <= segundos <= SEG_FIN:
-                act, d, f = senal
+                if mejor_senal:
+                    act, direccion, fuerza = mejor_senal
+                    senal = (act, direccion, fuerza)
+                    mensaje = f"🔔 SEÑAL CONFIRMADA\n📈 Activo: {act}\n➡️ Dirección: {direccion.upper()}\n💪 Fuerza: {fuerza}%\n⏱️ Entrando en breve..."
+                    logger.info(mensaje)
+                    enviar_telegram(mensaje)
+
+            # Ejecutar operación
+            if senal and SEG_INICIO_ENTRADA <= segundos <= SEG_FIN_ENTRADA:
+                act, direccion, fuerza = senal
+                logger.info(f"⚡ EJECUTANDO ENTRADA | {act} | {direccion.upper()} | {segundos}s")
+                enviar_telegram("⚡ ENVIANDO LA MISMA OPERACIÓN A AMBAS CUENTAS...")
+
                 res1 = {"ok": False}
                 res2 = {"ok": False}
 
-                enviar_telegram("⚡ ENVIANDO MISMA OPERACIÓN A AMBAS CUENTAS...")
-
-                hilo1 = Thread(target=ejecutar_orden, args=(IQ1, "CUENTA 1", act, d, vela_actual, res1))
-                hilo2 = Thread(target=ejecutar_orden, args=(IQ2, "CUENTA 2", act, d, vela_actual, res2))
+                hilo1 = Thread(target=ejecutar_orden, args=(IQ1, "CUENTA 1", act, direccion, vela_actual, res1))
+                hilo2 = Thread(target=ejecutar_orden, args=(IQ2, "CUENTA 2", act, direccion, vela_actual, res2))
                 hilo1.start()
                 hilo2.start()
                 hilo1.join()
@@ -278,18 +294,18 @@ def bucle_principal():
                     OPERACIONES_C1 += 1
                     OPERACIONES_C2 += 1
                     enviar_telegram(
-                        f"✅ OPERACIÓN EJECUTADA EN AMBAS CUENTAS\n"
+                        f"✅ OPERACIÓN EXITOSA EN AMBAS CUENTAS\n"
                         f"🔹 Cuenta 1: {res1['direccion']} | ID: {res1['id']} | Saldo: ${res1['saldo']}\n"
                         f"🔹 Cuenta 2: {res2['direccion']} | ID: {res2['id']} | Saldo: ${res2['saldo']}\n"
                         f"📊 Progreso: {OPERACIONES_C1}/{MAX_OPER}"
                     )
                 else:
-                    motivo = ""
+                    motivo = []
                     if not res1["ok"]:
-                        motivo += f"Cuenta 1: {res1.get('razon', 'Error')} | "
+                        motivo.append(f"Cuenta 1: {res1.get('razon', 'Error')}")
                     if not res2["ok"]:
-                        motivo += f"Cuenta 2: {res2.get('razon', 'Error')}"
-                    enviar_telegram(f"❌ OPERACIÓN FALLIDA\n{motivo}")
+                        motivo.append(f"Cuenta 2: {res2.get('razon', 'Error')}")
+                    enviar_telegram(f"❌ OPERACIÓN FALLIDA\n{ ' | '.join(motivo) }")
 
                 senal = None
 
@@ -297,7 +313,7 @@ def bucle_principal():
 
         except Exception as e:
             logger.error(f"💥 Error en bucle: {str(e)}")
-            enviar_telegram(f"⚠️ Error: {str(e)}")
+            enviar_telegram(f"⚠️ Error en el ciclo: {str(e)}")
             time.sleep(2)
 
 # --------------------------
