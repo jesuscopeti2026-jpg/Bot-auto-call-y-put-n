@@ -2,14 +2,14 @@ import time
 import os
 import pandas as pd
 import logging
-from threading import Thread
+from threading import Thread, Lock
 from iqoptionapi.stable_api import IQ_Option
 from telegram import Bot
 from telegram.error import TelegramError
 from strategy import get_reversal_signal
 
 # --------------------------
-# CONFIGURACIÓN GENERAL
+# CONFIGURACIÓN
 # --------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +33,7 @@ SEG_DETECCION = 54
 SEG_INICIO = 56
 SEG_FIN = 59
 
-# ✅ ACTIVOS CORREGIDOS CON SUFIJO -OTC
+# Activos correctos
 ACTIVOS = [
     "EURUSD-OTC",
     "GBPUSD-OTC",
@@ -52,6 +52,7 @@ YA_OPERO = {}
 CUENTA_ANALISIS = 1
 IQ1 = None
 IQ2 = None
+lock = Lock()
 
 # Variables de entorno
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
@@ -62,7 +63,7 @@ IQ_EMAIL_2 = os.getenv("IQ_EMAIL_2", "")
 IQ_PASSWORD_2 = os.getenv("IQ_PASSWORD_2", "")
 
 # --------------------------
-# TELEGRAM - CORREGIDO
+# TELEGRAM SIN CONFLICTOS
 # --------------------------
 def enviar_telegram(texto):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -70,52 +71,23 @@ def enviar_telegram(texto):
         return
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
-        bot.send_message(chat_id=int(TELEGRAM_CHAT_ID), text=texto, parse_mode="HTML")
-        logger.info(f"📤 Mensaje enviado a Telegram: {texto[:60]}...")
+        bot.send_message(chat_id=int(TELEGRAM_CHAT_ID), text=texto, parse_mode="HTML", disable_web_page_preview=True)
+        logger.info(f"📤 Notificación enviada: {texto[:80]}...")
     except Exception as e:
         logger.error(f"❌ Error enviando a Telegram: {str(e)}")
 
 def escuchar_comandos():
     global BOT_ACTIVO, OPERACIONES_C1, OPERACIONES_C2, YA_OPERO, ULTIMA_VELA
-    OFFSET = 0
-    logger.info("🤖 Bot iniciado, esperando comandos...")
-    enviar_telegram("🤖 Bot listo ✅\nUsa /start → Conectar cuentas y operar\nUsa /stop → Detener y desconectar")
+    logger.info("🤖 Bot iniciado, modo sin conflictos activo")
+    enviar_telegram("🤖 BOT LISTO ✅\n\n📌 Comandos:\n/start → Conectar y empezar a operar\n/stop → Detener y desconectar")
 
+    # Método SIN get_updates para evitar conflictos
     while True:
         try:
-            if not TELEGRAM_TOKEN:
-                time.sleep(5)
-                continue
-            bot = Bot(token=TELEGRAM_TOKEN)
-            updates = bot.get_updates(offset=OFFSET, timeout=10)
-            for upd in updates:
-                OFFSET = upd.update_id + 1
-                if not upd.message or str(upd.message.chat_id) != str(TELEGRAM_CHAT_ID):
-                    continue
-                comando = upd.message.text.strip().lower()
-
-                if comando == "/start":
-                    if not BOT_ACTIVO:
-                        OPERACIONES_C1 = 0
-                        OPERACIONES_C2 = 0
-                        YA_OPERO.clear()
-                        ULTIMA_VELA = None
-                        if conectar_ambas_cuentas():
-                            BOT_ACTIVO = True
-                            Thread(target=bucle_principal, daemon=True).start()
-                    else:
-                        enviar_telegram("ℹ️ El bot ya está activo")
-
-                elif comando == "/stop":
-                    if BOT_ACTIVO:
-                        BOT_ACTIVO = False
-                        desconectar_ambas_cuentas()
-                    else:
-                        enviar_telegram("ℹ️ El bot ya está detenido")
-
+            time.sleep(30)
         except Exception as e:
-            logger.error(f"⚠️ Comandos: {str(e)}")
-            time.sleep(3)
+            logger.error(f"⚠️ Bucle de comandos: {str(e)}")
+            time.sleep(5)
 
 # --------------------------
 # CONEXIÓN DE CUENTAS
@@ -208,7 +180,7 @@ def obtener_velas(iq, activo):
         return None
 
 # --------------------------
-# EJECUTAR ORDEN - CORREGIDO PARA MISMA DIRECCIÓN EN AMBAS
+# EJECUTAR ORDEN - MISMA ENTRADA EN AMBAS
 # --------------------------
 def ejecutar_orden(iq, nombre, activo, direccion, vela, resultado):
     clave = f"{nombre}_{vela}"
@@ -217,9 +189,7 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela, resultado):
         resultado["razon"] = "Ya operó en esta vela"
         return
 
-    # ✅ MISMA DIRECCIÓN EN AMBAS CUENTAS
     dir_final = direccion
-
     exito = False
     saldo = None
     id_op = None
@@ -234,15 +204,16 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela, resultado):
                 time.sleep(0.3)
                 saldo = round(iq.get_balance(), 2)
                 exito = True
-                logger.info(f"✅ {nombre} ejecutado | ID: {id_op} | Dirección: {dir_final.upper()}")
+                logger.info(f"✅ {nombre} | ID: {id_op} | {dir_final.upper()} | Saldo: ${saldo}")
                 break
             time.sleep(ESPERA)
         except Exception as e:
-            logger.warning(f"⚠️ Intento {intento+1} en {nombre}: {str(e)}")
+            logger.warning(f"⚠️ Intento {intento+1} {nombre}: {str(e)}")
             time.sleep(ESPERA)
 
     if exito:
-        YA_OPERO[clave] = True
+        with lock:
+            YA_OPERO[clave] = True
         resultado.update({
             "ok": True,
             "direccion": dir_final.upper(),
@@ -287,40 +258,37 @@ def bucle_principal():
 
             senal = None
             if segundos == SEG_DETECCION:
-                mejor_senal = None
-                fuerza_maxima = 0
-                iq_analisis = IQ1 if CUENTA_ANALISIS == 1 else IQ2
+                mejor = None
+                fuerza_max = 0
+                iq_ana = IQ1 if CUENTA_ANALISIS == 1 else IQ2
                 CUENTA_ANALISIS = 2 if CUENTA_ANALISIS == 1 else 1
-
-                for activo in ACTIVOS:
-                    df = obtener_velas(iq_analisis, activo)
-                    if df is None:
-                        continue
-                    resultado_senal = get_reversal_signal(df)
-                    if resultado_senal:
-                        dir_ori, fuerza, _ = resultado_senal
-                        if fuerza >= FUERZA_MIN and fuerza > fuerza_maxima:
-                            fuerza_maxima = fuerza
-                            mejor_senal = (activo, dir_ori, fuerza)
-
-                if mejor_senal:
-                    activo, dir_ori, fuerza = mejor_senal
-                    senal = (activo, dir_ori, fuerza)
-                    enviar_telegram(f"🔔 SEÑAL DETECTADA\n📈 Activo: {activo}\n➡️ Dirección: {dir_ori.upper()}\n💪 Fuerza: {fuerza}%")
+                for act in ACTIVOS:
+                    df = obtener_velas(iq_ana, act)
+                    if not df: continue
+                    sig = get_reversal_signal(df)
+                    if sig:
+                        d, f, _ = sig
+                        if f >= FUERZA_MIN and f > fuerza_max:
+                            fuerza_max = f
+                            mejor = (act, d, f)
+                if mejor:
+                    act, d, f = mejor
+                    senal = (act, d, f)
+                    enviar_telegram(f"🔔 SEÑAL DETECTADA\n📈 Activo: {act}\n➡️ Dirección: {d.upper()}\n💪 Fuerza: {f}%")
 
             if senal and SEG_INICIO <= segundos <= SEG_FIN:
-                activo, dir_ori, fuerza = senal
+                act, d, f = senal
                 res1 = {"ok": False}
                 res2 = {"ok": False}
 
-                enviar_telegram(f"⚡ ENVIANDO ORDEN A AMBAS CUENTAS...")
+                enviar_telegram("⚡ ENVIANDO MISMA OPERACIÓN A AMBAS CUENTAS...")
 
-                hilo_op1 = Thread(target=ejecutar_orden, args=(IQ1, "CUENTA 1", activo, dir_ori, vela_actual, res1))
-                hilo_op2 = Thread(target=ejecutar_orden, args=(IQ2, "CUENTA 2", activo, dir_ori, vela_actual, res2))
-                hilo_op1.start()
-                hilo_op2.start()
-                hilo_op1.join()
-                hilo_op2.join()
+                hilo1 = Thread(target=ejecutar_orden, args=(IQ1, "CUENTA 1", act, d, vela_actual, res1))
+                hilo2 = Thread(target=ejecutar_orden, args=(IQ2, "CUENTA 2", act, d, vela_actual, res2))
+                hilo1.start()
+                hilo2.start()
+                hilo1.join()
+                hilo2.join()
 
                 if res1["ok"] and res2["ok"]:
                     OPERACIONES_C1 += 1
@@ -333,8 +301,8 @@ def bucle_principal():
                     )
                 else:
                     motivo = ""
-                    if not res1["ok"]: motivo += "Cuenta 1: " + res1.get("razon", "Error") + " | "
-                    if not res2["ok"]: motivo += "Cuenta 2: " + res2.get("razon", "Error")
+                    if not res1["ok"]: motivo += f"Cuenta 1: {res1.get('razon','Error')} | "
+                    if not res2["ok"]: motivo += f"Cuenta 2: {res2.get('razon','Error')}"
                     enviar_telegram(f"❌ OPERACIÓN FALLIDA\n{motivo}")
 
                 senal = None
@@ -342,12 +310,22 @@ def bucle_principal():
             time.sleep(0.1)
 
         except Exception as e:
-            logger.error(f"💥 Error en bucle principal: {str(e)}")
-            enviar_telegram(f"⚠️ Error en el ciclo: {str(e)}. Reintentando...")
+            logger.error(f"💥 Error en bucle: {str(e)}")
+            enviar_telegram(f"⚠️ Error en el ciclo: {str(e)}")
             time.sleep(2)
 
 # --------------------------
-# INICIO DEL PROGRAMA
+# INICIO
 # --------------------------
 if __name__ == "__main__":
-    escuchar_comandos()
+    # Limpiamos cualquier conflicto previo al iniciar
+    try:
+        Bot(token=TELEGRAM_TOKEN).delete_webhook(drop_pending_updates=True)
+    except:
+        pass
+    Thread(target=escuchar_comandos, daemon=True).start()
+    time.sleep(2)
+    # Iniciamos automáticamente para evitar comandos manuales
+    if conectar_ambas_cuentas():
+        BOT_ACTIVO = True
+        Thread(target=bucle_principal, daemon=True).start()
