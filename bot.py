@@ -36,6 +36,7 @@ ACTIVOS = [
     "AUDCAD-OTC"
 ]
 
+# ✅ LÍMITE: 1 operación por cuenta por señal
 MAX_OPER_C1 = 15
 MAX_OPER_C2 = 15
 OPERACIONES_C1 = 0
@@ -136,7 +137,7 @@ def escuchar_comandos():
                         OPERACIONES_C2 = 0
                         BOT_ACTIVO = True
                         Thread(target=bucle_principal, daemon=True).start()
-                        enviar_mensaje_telegram("✅ Bot INICIADO. Hará 15 operaciones en cada cuenta. CUENTA_2 invierte la dirección.")
+                        enviar_mensaje_telegram("✅ Bot INICIADO. Por cada señal: 1 operación en Cuenta 1, 1 en Cuenta 2 (dirección invertida en Cuenta 2).")
                     else:
                         enviar_mensaje_telegram("ℹ️ Ya está activo.")
 
@@ -180,16 +181,17 @@ def obtener_velas(iq, activo):
 def ejecutar_orden(iq, nombre, activo, direccion, vela_actual, resultado):
     global OP_VELA_C1, OP_VELA_C2, OPERACIONES_C1, OPERACIONES_C2
 
+    # ✅ Control: solo 1 operación por cuenta por vela
     if nombre == "CUENTA_1":
         if OP_VELA_C1 == vela_actual or OPERACIONES_C1 >= MAX_OPER_C1:
             resultado["ok"] = False
             return
-        dir_final = direccion  # ✅ Cuenta 1: dirección normal
+        dir_final = direccion  # Dirección original
     else:
         if OP_VELA_C2 == vela_actual or OPERACIONES_C2 >= MAX_OPER_C2:
             resultado["ok"] = False
             return
-        dir_final = "put" if direccion == "call" else "call"  # ✅ Cuenta 2: dirección INVERTIDA
+        dir_final = "put" if direccion == "call" else "call"  # Dirección invertida
 
     logger.info(f"📤 Enviando a {nombre}: {activo} {dir_final} ${MONTO}")
     exito = False
@@ -209,7 +211,7 @@ def ejecutar_orden(iq, nombre, activo, direccion, vela_actual, resultado):
             if estado and id_op > 0:
                 time.sleep(0.4)
                 saldo_final = round(iq.get_balance(), 2)
-                mensaje = f"✅ {nombre} | {activo} {dir_final} | ID: {id_op} | Saldo: ${saldo_final}"
+                mensaje = f"✅ {nombre} | {activo} {dir_final.upper()} | ID: {id_op} | Saldo: ${saldo_final}"
                 logger.info(mensaje)
                 enviar_mensaje_telegram(mensaje)
                 exito = True
@@ -250,7 +252,7 @@ def bucle_principal():
     while BOT_ACTIVO:
         try:
             if OPERACIONES_C1 >= MAX_OPER_C1 and OPERACIONES_C2 >= MAX_OPER_C2:
-                enviar_mensaje_telegram("✅ 30 operaciones completadas. Bot detenido.")
+                enviar_mensaje_telegram("✅ 15 operaciones en cada cuenta finalizadas. Bot detenido.")
                 BOT_ACTIVO = False
                 break
 
@@ -260,7 +262,8 @@ def bucle_principal():
 
             if vela_act != ULTIMA_VELA:
                 ULTIMA_VELA = vela_act
-                OP_VELA_C1 = OP_VELA_C2 = None
+                OP_VELA_C1 = None
+                OP_VELA_C2 = None
                 senal = None
                 CUENTA_ANALISIS = 2 if CUENTA_ANALISIS == 1 else 1
 
@@ -284,20 +287,22 @@ def bucle_principal():
                 if mejor:
                     act, dir_ori, f = mejor
                     senal = (act, dir_ori, f)
-                    enviar_mensaje_telegram(f"🔔 Señal original: {act} {dir_ori} | Fuerza: {f}%")
+                    enviar_mensaje_telegram(f"🔔 SEÑAL DETECTADA: {act} | Dirección base: {dir_ori.upper()} | Fuerza: {f}%")
 
             if senal and SEG_INICIO <= seg <= SEG_FIN:
                 act, dir_ori, f = senal
-                logger.info("🚀 Enviando órdenes")
+                logger.info("🚀 Ejecutando operación en ambas cuentas")
 
                 res1 = {"ok": False}
                 res2 = {"ok": False}
 
+                # ✅ 1 operación en Cuenta 1
                 if OPERACIONES_C1 < MAX_OPER_C1:
                     t1 = Thread(target=ejecutar_orden, args=(iq1, "CUENTA_1", act, dir_ori, vela_act, res1))
                     t1.start()
                     t1.join()
 
+                # ✅ 1 operación en Cuenta 2 (mismo activo, dirección invertida)
                 if OPERACIONES_C2 < MAX_OPER_C2:
                     t2 = Thread(target=ejecutar_orden, args=(iq2, "CUENTA_2", act, dir_ori, vela_act, res2))
                     t2.start()
