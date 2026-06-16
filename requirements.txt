@@ -1,7 +1,4 @@
-# Instalación directa desde repositorio oficial (siempre disponible)
 git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git@master
-
-# Librerías compatibles y estables
 python-telegram-bot==13.15
 pandas==2.1.4
 numpy==1.26.4
