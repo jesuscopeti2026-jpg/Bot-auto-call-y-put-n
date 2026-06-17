@@ -33,7 +33,7 @@ def precio_toco_nivel(precio, niveles, tolerancia=0.0008):
 def es_reversion_exacta(c, nivel):
     """Condición principal: toca punto y cierra justo o lo rechaza fuerte"""
     rango = range_c(c)
-    if rango == 0: return False
+    if rango == 0: return False, ""
 
     # CASO 1: RECHAZO FUERTE
     if abs(c["high"] - nivel) <= 0.0008 and c["close"] < nivel - (rango*0.25):
@@ -41,7 +41,7 @@ def es_reversion_exacta(c, nivel):
     if abs(c["low"] - nivel) <= 0.0008 and c["close"] > nivel + (rango*0.25):
         return True, "RECHAZO DE SOPORTE"
 
-    # CASO 2: RESPETA EL PUNTO Y CIERRA SOBRE/BAJO ÉL
+    # CASO 2: RESPETA EL PUNTO Y CIERRE JUSTO
     if abs(c["close"] - nivel) <= 0.0008:
         if bullish(c) and c["open"] < nivel:
             return True, "RESPETO Y CIERRE EN SOPORTE"
@@ -67,7 +67,6 @@ def get_reversal_signal(df):
     df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
 
     c1 = df.iloc[-1]
-    c2 = df.iloc[-2]
 
     if es_agotamiento(c1): return None
 
