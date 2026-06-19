@@ -1,5 +1,8 @@
 git+https://github.com/Lu-Yi-Hsun/iqoptionapi.git@master
-pyTelegramBotAPI==4.10.0
-python-dotenv==1.0.1
-requests==2.31.0
+python-telegram-bot==13.15
+pandas==2.1.4
 numpy==1.26.4
+requests==2.31.0
+websockets==10.4
+setuptools>=65.5.1
+python-dotenv==1.0.0
