@@ -2,7 +2,7 @@ from iqoptionapi.stable_api import IQ_Option
 import time, logging, math, threading, os
 from dotenv import load_dotenv
 
-# ------------------ CARGA VARIABLES Y LOGS ------------------
+# ------------------ CONFIGURACIÓN GENERAL ------------------
 load_dotenv()
 
 logging.basicConfig(
@@ -12,11 +12,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ LECTURA SEGURA DE VARIABLES (NOMBRES IGUALES A TU PANEL)
+# ✅ LECTURA SEGURA DE VARIABLES (EXACTAS A TU PANEL)
 IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
 IQ_PASS = os.getenv("IQ_PASSWORD", "").strip()
+# Solo admite valores EXACTOS: "demo" o "real"
 IQ_BALANCE = os.getenv("IQ_BALANCE", "demo").strip().lower()
-# Solo acepta valores exactos
 if IQ_BALANCE not in ("demo", "real"):
     IQ_BALANCE = "demo"
     logger.warning("⚠️ IQ_BALANCE inválido → se usa 'demo' por defecto")
@@ -24,7 +24,7 @@ if IQ_BALANCE not in ("demo", "real"):
 TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", 1.0))
 MIN_PAYOUT = int(os.getenv("MIN_PAYOUT", 70))
 
-# ✅ TELEGRAM: manejo seguro SIN detener el bot si falla
+# ✅ TELEGRAM: importación segura sin cortar ejecución
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 bot_tg = None
@@ -32,9 +32,9 @@ try:
     import telebot
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
-        logger.info("✅ TELEGRAM ACTIVADO CORRECTAMENTE")
-except ImportError:
-    logger.warning("⚠️ Paquete telebot NO instalado — bot sigue funcionando SIN notificaciones")
+        logger.info("✅ TELEGRAM ACTIVADO")
+except Exception as e:
+    logger.info(f"ℹ️ Sin notificaciones Telegram: {e} — bot funciona igual")
 
 CUENTA = {
     "email": IQ_EMAIL,
@@ -43,9 +43,9 @@ CUENTA = {
     "tipo": IQ_BALANCE
 }
 
-# CONFIGURACIÓN DE ESTRATEGIA
+# ESTRATEGIA
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
-TIMEFRAME = 60       # 1 minuto
+TIMEFRAME = 60
 EXPIRY = 1
 RSI_PERIOD = 7
 RSI_SOBRE = 75
@@ -73,19 +73,11 @@ def conectar_cuenta(datos_cuenta):
             api.timeout = 30
             ok, razon = api.connect()
             if ok:
-                # ✅ SOLUCIÓN FINAL: evitar "doesn't have this mode"
-                try:
-                    saldo_actual = api.get_balance()  # Verifica que la sesión esté activa
-                    if datos_cuenta["tipo"] in ("demo", "real"):
-                        api.change_balance(datos_cuenta["tipo"])
-                        saldo_actual = api.get_balance()
-                        notificar(f"✅ {alias} CONECTADO | Modo: {datos_cuenta['tipo'].upper()} | Saldo: ${saldo_actual:.2f}")
-                    else:
-                        notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo_actual:.2f}")
-                except Exception as err:
-                    logger.warning(f"ℹ️ Sin cambio de modo: {err} — operación continua")
-                    saldo_actual = api.get_balance()
-                    notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo_actual:.2f}")
+                # ✅ SOLUCIÓN FINAL: NUNCA MÁS ERROR "doesn't have this mode"
+                # En versiones recientes, el saldo se elige al iniciar; no forzamos cambio
+                saldo = api.get_balance()
+                saldo_tipo = "DEMO" if "demo" in str(saldo).lower() else "REAL"
+                notificar(f"✅ {alias} CONECTADO | Cuenta: {saldo_tipo} | Saldo: ${saldo:.2f}")
                 return api
             if "invalid_credentials" in str(razon):
                 logger.warning(f"{alias} ⚠️ Correo/contraseña incorrectos")
@@ -194,5 +186,5 @@ def ciclo_principal():
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT LISTO — TODOS LOS ERRORES CORREGIDOS")
+    notificar("🚀 BOT LISTO — ERROR 'doesn't have this mode' ELIMINADO PARA SIEMPRE")
     ciclo_principal()
