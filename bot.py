@@ -2,8 +2,8 @@ from iqoptionapi.stable_api import IQ_Option
 import time, logging, math, threading, os
 from dotenv import load_dotenv
 
-# ------------------ CARGA VARIABLES DE ENTORNO ------------------
-load_dotenv()  # Lee .env local + toma prioridad a variables de Railway
+# ------------------ CARGA VARIABLES + CONFIGURACIÓN LOGS ------------------
+load_dotenv()  # Compatibilidad con .env local y Railway
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,22 +12,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ SOLO DESDE VARIABLES DE RAILWAY — NO CAMBIES AQUÍ
+# ✅ LECTURA EXACTA DE VARIABLES DE RAILWAY
+IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
+IQ_PASS = os.getenv("IQ_PASS", "").strip()
+IQ_BALANCE = os.getenv("IQ_BALANCE", "demo").strip()
+TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", 1.0))
+MIN_PAYOUT = int(os.getenv("MIN_PAYOUT", 70))
+
 CUENTA = {
-    "email": os.getenv("IQ_EMAIL"),
-    "pass": os.getenv("IQ_PASS"),
+    "email": IQ_EMAIL,
+    "pass": IQ_PASS,
     "alias": "CUENTA-PRINCIPAL",
-    "tipo": os.getenv("IQ_BALANCE", "demo")  # "demo" o "real"
+    "tipo": IQ_BALANCE
 }
 
-# Configuración operativa
+# ACTIVOS E INDICADORES
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
-TIMEFRAME = 60       # 1 minuto
-EXPIRY = 1           # vencimiento 1 min
-MONTO = float(os.getenv("TRADE_AMOUNT", 1.0))
-PAGO_MIN = int(os.getenv("MIN_PAYOUT", 70))
-
-# Indicadores + filtro agotamiento
+TIMEFRAME = 60
+EXPIRY = 1
 RSI_PERIOD = 7
 RSI_SOBRE = 75
 RSI_SOBREV = 25
@@ -36,16 +38,16 @@ ADX_FUERTE = 30
 MAX_VELA_RANGO = 0.012
 MIN_RANGO = 0.001
 
-# Telegram — también desde variables
-TELEGRAM_TOKEN = os.getenv("TG_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID", "")
+# TELEGRAM (OPCIONAL)
+TELEGRAM_TOKEN = os.getenv("TG_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
 bot_tg = None
 try:
     import telebot
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
 except ImportError:
-    logger.info("ℹ️ Sin notificaciones Telegram — módulo no requerido")
+    logger.info("ℹ️ Sin notificaciones Telegram — módulo no instalado/activado")
 # -----------------------------------------------------
 
 def notificar(texto):
@@ -56,13 +58,15 @@ def notificar(texto):
 
 def conectar_cuenta(datos_cuenta):
     alias = datos_cuenta["alias"]
+    # ✅ VERIFICACIÓN ANTES DE INTENTAR CONEXIÓN
     if not datos_cuenta["email"] or not datos_cuenta["pass"]:
-        logger.error("❌ FALTAN VARIABLES: IQ_EMAIL o IQ_PASS no definidas en Railway")
-        time.sleep(15)
+        logger.error("❌ FALTAN VARIABLES: IQ_EMAIL o IQ_PASS NO DEFINIDAS EN RAILWAY")
+        time.sleep(10)
         return None
     while True:
         try:
             api = IQ_Option(datos_cuenta["email"], datos_cuenta["pass"])
+            api.timeout = 20  # Evita corte rápido por red
             ok, razon = api.connect()
             if ok:
                 api.change_balance(datos_cuenta["tipo"])
@@ -70,12 +74,14 @@ def conectar_cuenta(datos_cuenta):
                 notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo:.2f}")
                 return api
             if "invalid_credentials" in str(razon):
-                logger.warning(f"{alias} ⚠️ USUARIO/CLAVE INCORRECTOS — revisa variables en Railway")
+                logger.warning(f"{alias} ⚠️ USUARIO/CLAVE INCORRECTOS — revisa variables")
+            elif "timed out" in str(razon).lower():
+                logger.warning(f"{alias} ⏱️ TIEMPO DE ESPERA AGOTADO — red lenta/bloqueada")
             else:
                 logger.warning(f"{alias} Fallo conexión: {razon}")
-            logger.info("→ Reintento en 10s...")
+            logger.info("→ Reintento en 10 segundos...")
         except Exception as e:
-            logger.error(f"{alias} Error conexión: {e} → reintento 10s")
+            logger.error(f"{alias} Error: {e} → reintento 10s")
         time.sleep(10)
 
 def calcular_rsi(precios, periodo):
@@ -154,10 +160,10 @@ def ciclo_principal():
                     estado = api.get_all_open_time()["turbo"].get(activo, {})
                     if not estado.get("open", False): continue
                     pago = api.get_payout(activo, "turbo")
-                    if pago < PAGO_MIN: continue
+                    if pago < MIN_PAYOUT: continue
                     direccion = obtener_señal(api, activo)
                     if direccion:
-                        ok_op, id_op = api.buy(MONTO, activo, direccion, EXPIRY)
+                        ok_op, id_op = api.buy(TRADE_AMOUNT, activo, direccion, EXPIRY)
                         if ok_op:
                             notificar(f"📈 {alias} | {activo} | {direccion.upper()} | Pago: {pago}%")
                             res = api.check_win_v4(id_op, 10)
@@ -174,5 +180,5 @@ def ciclo_principal():
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT LISTO — 1 CUENTA | VARIABLES RAILWAY | RECONEXIÓN")
+    notificar("🚀 BOT LISTO — 1 CUENTA + VARIABLES + TIEMPO DE ESPERA AJUSTADO")
     ciclo_principal()
