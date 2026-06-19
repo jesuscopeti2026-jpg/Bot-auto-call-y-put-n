@@ -2,8 +2,8 @@ from iqoptionapi.stable_api import IQ_Option
 import time, logging, math, threading, os
 from dotenv import load_dotenv
 
-# ------------------ CARGA VARIABLES + CONFIGURACIÓN LOGS ------------------
-load_dotenv()  # Compatibilidad con .env local y Railway
+# ------------------ CARGA VARIABLES RAILWAY ------------------
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,12 +12,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ LECTURA EXACTA DE VARIABLES DE RAILWAY
+# ✅ NOMBRES EXACTOS A TU PANEL: IQ_EMAIL / IQ_PASSWORD
 IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
-IQ_PASS = os.getenv("IQ_PASS", "").strip()
+IQ_PASS = os.getenv("IQ_PASSWORD", "").strip()  # ← CLAVE CORRECCIÓN
 IQ_BALANCE = os.getenv("IQ_BALANCE", "demo").strip()
 TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", 1.0))
 MIN_PAYOUT = int(os.getenv("MIN_PAYOUT", 70))
+
+# ✅ TELEGRAM — tus nombres exactos
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+bot_tg = None
+try:
+    import telebot
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
+        logger.info("✅ Telegram listo")
+except ImportError:
+    logger.info("ℹ️ Sin notificaciones Telegram")
 
 CUENTA = {
     "email": IQ_EMAIL,
@@ -26,7 +38,7 @@ CUENTA = {
     "tipo": IQ_BALANCE
 }
 
-# ACTIVOS E INDICADORES
+# ACTIVOS + FILTROS
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
 TIMEFRAME = 60
 EXPIRY = 1
@@ -38,18 +50,6 @@ ADX_FUERTE = 30
 MAX_VELA_RANGO = 0.012
 MIN_RANGO = 0.001
 
-# TELEGRAM (OPCIONAL)
-TELEGRAM_TOKEN = os.getenv("TG_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
-bot_tg = None
-try:
-    import telebot
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
-except ImportError:
-    logger.info("ℹ️ Sin notificaciones Telegram — módulo no instalado/activado")
-# -----------------------------------------------------
-
 def notificar(texto):
     logger.info(texto)
     if bot_tg:
@@ -58,15 +58,15 @@ def notificar(texto):
 
 def conectar_cuenta(datos_cuenta):
     alias = datos_cuenta["alias"]
-    # ✅ VERIFICACIÓN ANTES DE INTENTAR CONEXIÓN
+    # ✅ Verificación clara
     if not datos_cuenta["email"] or not datos_cuenta["pass"]:
-        logger.error("❌ FALTAN VARIABLES: IQ_EMAIL o IQ_PASS NO DEFINIDAS EN RAILWAY")
+        logger.error("❌ VARIABLES NO CARGADAS — revisa nombres y haz REBUILD")
         time.sleep(10)
         return None
     while True:
         try:
             api = IQ_Option(datos_cuenta["email"], datos_cuenta["pass"])
-            api.timeout = 20  # Evita corte rápido por red
+            api.timeout = 25
             ok, razon = api.connect()
             if ok:
                 api.change_balance(datos_cuenta["tipo"])
@@ -74,15 +74,15 @@ def conectar_cuenta(datos_cuenta):
                 notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo:.2f}")
                 return api
             if "invalid_credentials" in str(razon):
-                logger.warning(f"{alias} ⚠️ USUARIO/CLAVE INCORRECTOS — revisa variables")
+                logger.warning(f"{alias} ⚠️ Correo/contraseña incorrectos")
             elif "timed out" in str(razon).lower():
-                logger.warning(f"{alias} ⏱️ TIEMPO DE ESPERA AGOTADO — red lenta/bloqueada")
+                logger.warning(f"{alias} ⏱️ Conexión lenta — reintentando")
             else:
-                logger.warning(f"{alias} Fallo conexión: {razon}")
-            logger.info("→ Reintento en 10 segundos...")
+                logger.warning(f"{alias} {razon}")
+            time.sleep(10)
         except Exception as e:
-            logger.error(f"{alias} Error: {e} → reintento 10s")
-        time.sleep(10)
+            logger.error(f"{alias} {e}")
+            time.sleep(10)
 
 def calcular_rsi(precios, periodo):
     gan, per = [], []
@@ -128,7 +128,7 @@ def obtener_velas_seguro(api, activo, cantidad=30):
         if not api or not api.check_connect(): return None
         return api.get_candles(activo, TIMEFRAME, cantidad, time.time())
     except Exception as e:
-        logger.error(f"Error velas {activo}: {e}")
+        logger.error(f"{activo}: {e}")
         return None
 
 def obtener_señal(api, activo):
@@ -152,7 +152,7 @@ def ciclo_principal():
     while True:
         try:
             if not api or not api.check_connect():
-                notificar(f"⚠️ {alias} DESCONECTADO — reconectando...")
+                notificar(f"⚠️ {alias} RECONECTANDO...")
                 api = conectar_cuenta(CUENTA)
                 continue
             for activo in ASSETS:
@@ -165,20 +165,20 @@ def ciclo_principal():
                     if direccion:
                         ok_op, id_op = api.buy(TRADE_AMOUNT, activo, direccion, EXPIRY)
                         if ok_op:
-                            notificar(f"📈 {alias} | {activo} | {direccion.upper()} | Pago: {pago}%")
+                            notificar(f"📈 {alias} | {activo} | {direccion.upper()} | {pago}%")
                             res = api.check_win_v4(id_op, 10)
-                            if res[1]>0: notificar(f"🟢 GANANCIA: +${res[1]:.2f}")
-                            elif res[1]<0: notificar(f"🔴 PÉRDIDA: -${abs(res[1]):.2f}")
+                            if res[1]>0: notificar(f"🟢 +${res[1]:.2f}")
+                            elif res[1]<0: notificar(f"🔴 -${abs(res[1]):.2f}")
                     time.sleep(1.2)
                 except Exception as e:
-                    logger.error(f"{alias} {activo}: {e}")
+                    logger.error(f"{activo}: {e}")
                     time.sleep(3)
             time.sleep(8)
         except Exception as e:
-            logger.error(f"{alias} Error ciclo: {e} → reinicio")
+            logger.error(f"Reinicio ciclo: {e}")
             api = conectar_cuenta(CUENTA)
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT LISTO — 1 CUENTA + VARIABLES + TIEMPO DE ESPERA AJUSTADO")
+    notificar("🚀 BOT LISTO — NOMBRES VARIABLES COINCIDENTES")
     ciclo_principal()
