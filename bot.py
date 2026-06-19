@@ -1,7 +1,10 @@
 from iqoptionapi.stable_api import IQ_Option
-import time, logging, math, threading
+import time, logging, math, threading, os
+from dotenv import load_dotenv
 
-# ------------------ CONFIGURACIÓN ------------------
+# ------------------ CARGA VARIABLES DE ENTORNO ------------------
+load_dotenv()  # Lee .env local + toma prioridad a variables de Railway
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -9,21 +12,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ SOLO 1 CUENTA
+# ✅ SOLO DESDE VARIABLES DE RAILWAY — NO CAMBIES AQUÍ
 CUENTA = {
-    "email": "tu_correo@dominio.com",   # ← CAMBIA ESTO
-    "pass": "tu_contraseña",            # ← CAMBIA ESTO
+    "email": os.getenv("IQ_EMAIL"),
+    "pass": os.getenv("IQ_PASS"),
     "alias": "CUENTA-PRINCIPAL",
-    "tipo": "demo"                      # usa "real" para cuenta real
+    "tipo": os.getenv("IQ_BALANCE", "demo")  # "demo" o "real"
 }
 
+# Configuración operativa
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
 TIMEFRAME = 60       # 1 minuto
 EXPIRY = 1           # vencimiento 1 min
-MONTO = 1.0          # monto por operación
-PAGO_MIN = 70        # % mínimo de pago aceptado
+MONTO = float(os.getenv("TRADE_AMOUNT", 1.0))
+PAGO_MIN = int(os.getenv("MIN_PAYOUT", 70))
 
-# INDICADORES + FILTRO VELAS AGOTAMIENTO
+# Indicadores + filtro agotamiento
 RSI_PERIOD = 7
 RSI_SOBRE = 75
 RSI_SOBREV = 25
@@ -32,16 +36,16 @@ ADX_FUERTE = 30
 MAX_VELA_RANGO = 0.012
 MIN_RANGO = 0.001
 
-# TELEGRAM (opcional)
-TELEGRAM_TOKEN = ""
-TELEGRAM_CHAT_ID = ""
+# Telegram — también desde variables
+TELEGRAM_TOKEN = os.getenv("TG_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID", "")
 bot_tg = None
 try:
     import telebot
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
 except ImportError:
-    logger.warning("⚠️ Sin notificaciones Telegram (módulo no instalado o vacío)")
+    logger.info("ℹ️ Sin notificaciones Telegram — módulo no requerido")
 # -----------------------------------------------------
 
 def notificar(texto):
@@ -52,6 +56,10 @@ def notificar(texto):
 
 def conectar_cuenta(datos_cuenta):
     alias = datos_cuenta["alias"]
+    if not datos_cuenta["email"] or not datos_cuenta["pass"]:
+        logger.error("❌ FALTAN VARIABLES: IQ_EMAIL o IQ_PASS no definidas en Railway")
+        time.sleep(15)
+        return None
     while True:
         try:
             api = IQ_Option(datos_cuenta["email"], datos_cuenta["pass"])
@@ -61,7 +69,11 @@ def conectar_cuenta(datos_cuenta):
                 saldo = api.get_balance()
                 notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo:.2f}")
                 return api
-            logger.warning(f"{alias} Fallo conexión: {razon} → reintento 10s")
+            if "invalid_credentials" in str(razon):
+                logger.warning(f"{alias} ⚠️ USUARIO/CLAVE INCORRECTOS — revisa variables en Railway")
+            else:
+                logger.warning(f"{alias} Fallo conexión: {razon}")
+            logger.info("→ Reintento en 10s...")
         except Exception as e:
             logger.error(f"{alias} Error conexión: {e} → reintento 10s")
         time.sleep(10)
@@ -107,7 +119,7 @@ def es_agotamiento(vela):
 
 def obtener_velas_seguro(api, activo, cantidad=30):
     try:
-        if not api.check_connect(): return None
+        if not api or not api.check_connect(): return None
         return api.get_candles(activo, TIMEFRAME, cantidad, time.time())
     except Exception as e:
         logger.error(f"Error velas {activo}: {e}")
@@ -133,7 +145,7 @@ def ciclo_principal():
     api = conectar_cuenta(CUENTA)
     while True:
         try:
-            if not api.check_connect():
+            if not api or not api.check_connect():
                 notificar(f"⚠️ {alias} DESCONECTADO — reconectando...")
                 api = conectar_cuenta(CUENTA)
                 continue
@@ -162,5 +174,5 @@ def ciclo_principal():
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT INICIADO — 1 CUENTA | RECONEXIÓN | FILTRO AGOTAMIENTO")
+    notificar("🚀 BOT LISTO — 1 CUENTA | VARIABLES RAILWAY | RECONEXIÓN")
     ciclo_principal()
