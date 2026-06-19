@@ -1,6 +1,5 @@
 from iqoptionapi.stable_api import IQ_Option
 import time, logging, math, telebot, threading
-from datetime import datetime
 
 # ------------------ CONFIGURACIÓN ------------------
 logging.basicConfig(
@@ -10,36 +9,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# CUENTAS (2 independientes)
 ACCOUNTS = [
-    {"email": "tu_correo1@dominio.com", "pass": "tu_clave1", "alias": "CUENTA-1", "tipo": "demo"},
-    {"email": "tu_correo2@dominio.com", "pass": "tu_clave2", "alias": "CUENTA-2", "tipo": "demo"}
+    {"email": "cuenta1@correo.com", "pass": "clave1", "alias": "CUENTA-1", "tipo": "demo"},
+    {"email": "cuenta2@correo.com", "pass": "clave2", "alias": "CUENTA-2", "tipo": "demo"}
 ]
 ASSETS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURGBP"]
-TIMEFRAME = 60
-EXPIRY = 1
-MONTO = 1.0
-PAGO_MIN = 70
+TIMEFRAME = 60       # 1 minuto
+EXPIRY = 1           # vencimiento en minutos
+MONTO = 1.0          # monto por operación
+PAGO_MIN = 70        # % mínimo aceptable
+
+# INDICADORES + FILTRO AGOTAMIENTO
 RSI_PERIOD = 7
 RSI_SOBRE = 75
 RSI_SOBREV = 25
 ADX_PERIOD = 14
-ADX_FUERTE = 28
+ADX_FUERTE = 30      # <30 = rango/favorable
 MAX_VELA_RANGO = 0.012
 MIN_RANGO = 0.001
 
-TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
-TELEGRAM_CHAT_ID = "TU_ID_AQUI"
+# TELEGRAM (deja vacío si no usas)
+TELEGRAM_TOKEN = ""
+TELEGRAM_CHAT_ID = ""
 bot_tg = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML") if TELEGRAM_TOKEN else None
 # -----------------------------------------------------
 
 def notificar(texto):
     logger.info(texto)
-    if bot_tg:
+    if bot_tg and TELEGRAM_TOKEN:
         try: bot_tg.send_message(TELEGRAM_CHAT_ID, texto[:4000])
         except Exception as e: logger.warning(f"Telegram: {e}")
 
 def conectar_cuenta(datos_cuenta):
-    """Función dedicada a conectar/reconectar con reintentos"""
     alias = datos_cuenta["alias"]
     while True:
         try:
@@ -50,10 +52,9 @@ def conectar_cuenta(datos_cuenta):
                 saldo = api.get_balance()
                 notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo:.2f}")
                 return api
-            else:
-                logger.warning(f"{alias} Fallo conexión: {razon} | Reintento en 10s...")
+            logger.warning(f"{alias} Fallo conexión: {razon} → reintento 10s")
         except Exception as e:
-            logger.error(f"{alias} Error conexión: {e} | Reintento en 10s...")
+            logger.error(f"{alias} Error conexión: {e} → reintento 10s")
         time.sleep(10)
 
 def calcular_rsi(precios, periodo):
@@ -96,11 +97,10 @@ def es_agotamiento(vela):
     return rango > MAX_VELA_RANGO or rango < MIN_RANGO or cuerpo/rango < 0.15
 
 def obtener_velas_seguro(api, activo, cantidad=30):
-    """Obtiene velas y reconecta automáticamente si falla"""
     try:
         return api.get_candles(activo, TIMEFRAME, cantidad, time.time())
     except Exception as e:
-        logger.error(f"get_candles falló: {e} → necesidad reconexión")
+        logger.error(f"get_candles falló: {e}")
         return None
 
 def obtener_señal(api, activo):
@@ -123,7 +123,6 @@ def ciclo_cuenta(datos_cuenta):
     api = conectar_cuenta(datos_cuenta)
     while True:
         try:
-            # Verificar estado de conexión en cada vuelta
             if not api.check_connect():
                 notificar(f"⚠️ {alias} DESCONECTADO — reconectando...")
                 api = conectar_cuenta(datos_cuenta)
@@ -141,7 +140,7 @@ def ciclo_cuenta(datos_cuenta):
                             res = api.check_win_v4(id_op, 10)
                             if res[1]>0: notificar(f"🟢 {alias} +${res[1]:.2f}")
                             elif res[1]<0: notificar(f"🔴 {alias} -${abs(res[1]):.2f}")
-                    time.sleep(1.5)
+                    time.sleep(1.2)
                 except Exception as e:
                     logger.error(f"{alias} {activo}: {e}")
                     time.sleep(3)
@@ -152,7 +151,7 @@ def ciclo_cuenta(datos_cuenta):
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT ACTUALIZADO: RECONEXIÓN AUTOMÁTICA + 2 CUENTAS")
+    notificar("🚀 BOT LISTO: RECONEXIÓN + 2 CUENTAS + FILTRO AGOTAMIENTO")
     hilos = []
     for cta in ACCOUNTS:
         t = threading.Thread(target=ciclo_cuenta, args=(cta,), daemon=True)
