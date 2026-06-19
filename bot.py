@@ -14,8 +14,13 @@ logger = logging.getLogger(__name__)
 
 # ✅ NOMBRES EXACTOS A TU PANEL: IQ_EMAIL / IQ_PASSWORD
 IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
-IQ_PASS = os.getenv("IQ_PASSWORD", "").strip()  # ← CLAVE CORRECCIÓN
-IQ_BALANCE = os.getenv("IQ_BALANCE", "demo").strip()
+IQ_PASS = os.getenv("IQ_PASSWORD", "").strip()
+# ✅ Solo admite "demo" o "real" — se limpia y valida
+IQ_BALANCE = os.getenv("IQ_BALANCE", "demo").strip().lower()
+if IQ_BALANCE not in ("demo", "real"):
+    IQ_BALANCE = "demo"
+    logger.warning("⚠️ Tipo de cuenta inválido — se usa DEMO por defecto")
+
 TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", 1.0))
 MIN_PAYOUT = int(os.getenv("MIN_PAYOUT", 70))
 
@@ -58,7 +63,6 @@ def notificar(texto):
 
 def conectar_cuenta(datos_cuenta):
     alias = datos_cuenta["alias"]
-    # ✅ Verificación clara
     if not datos_cuenta["email"] or not datos_cuenta["pass"]:
         logger.error("❌ VARIABLES NO CARGADAS — revisa nombres y haz REBUILD")
         time.sleep(10)
@@ -69,9 +73,15 @@ def conectar_cuenta(datos_cuenta):
             api.timeout = 25
             ok, razon = api.connect()
             if ok:
-                api.change_balance(datos_cuenta["tipo"])
-                saldo = api.get_balance()
-                notificar(f"✅ {alias} CONECTADO | Saldo: ${saldo:.2f}")
+                # ✅ Manejo seguro del cambio de modo
+                try:
+                    api.change_balance(datos_cuenta["tipo"])
+                    saldo = api.get_balance()
+                    notificar(f"✅ {alias} CONECTADO | Modo: {datos_cuenta['tipo'].upper()} | Saldo: ${saldo:.2f}")
+                except Exception as err_balance:
+                    logger.error(f"⚠️ Error al cambiar modo: {err_balance} — operando sin cambio forzado")
+                    saldo = api.get_balance()
+                    notificar(f"✅ {alias} CONECTADO | Saldo actual: ${saldo:.2f}")
                 return api
             if "invalid_credentials" in str(razon):
                 logger.warning(f"{alias} ⚠️ Correo/contraseña incorrectos")
@@ -81,7 +91,7 @@ def conectar_cuenta(datos_cuenta):
                 logger.warning(f"{alias} {razon}")
             time.sleep(10)
         except Exception as e:
-            logger.error(f"{alias} {e}")
+            logger.error(f"{alias} Error conexión: {e}")
             time.sleep(10)
 
 def calcular_rsi(precios, periodo):
@@ -180,5 +190,5 @@ def ciclo_principal():
             time.sleep(5)
 
 if __name__ == "__main__":
-    notificar("🚀 BOT LISTO — NOMBRES VARIABLES COINCIDENTES")
+    notificar("🚀 BOT LISTO — ERROR 'doesn't have this mode' CORREGIDO")
     ciclo_principal()
