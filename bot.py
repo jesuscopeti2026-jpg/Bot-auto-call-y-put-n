@@ -7,7 +7,6 @@ import sys
 import threading
 import logging
 from datetime import datetime, timezone
-from iqoptionapi.stable_api import IQ_Option
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,7 +14,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN ADAPTADA A RAILWAY
+# ⚙️ CONFIGURACIÓN PARA RAILWAY / CLOUD
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -36,18 +35,18 @@ PARES = [
 MAX_DAILY_TRADES = 100
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
-MAX_RECONNECT_ATTEMPTS = 20      # Más intentos para red externa
-RECONNECT_DELAY = 4
-RECONNECT_DELAY_LONG = 20
+MAX_RECONNECT_ATTEMPTS = 12
+RECONNECT_DELAY = 5          # Espera mayor para que el servidor responda
+RECONNECT_DELAY_LONG = 30
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
 VENTANA_NIVELES = 5
 
 TIEMPO_ESPERA_EJECUCION = 0.3
-REINTENTOS_EJECUCION = 5
+REINTENTOS_EJECUCION = 4
 TIEMPO_MINIMO_VALIDO = 57
-ESPERA_TRAS_ERROR = 0.8          # Pausa mayor tras fallo de red
+ESPERA_TRAS_ERROR = 1.0      # Evita saturar conexión tras fallo
 
 # Variables globales
 DAILY_TRADES = 0
@@ -58,7 +57,6 @@ LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
 IQ_API = None
-LAST_SUCCESS = 0                 # Control de vida de conexión
 
 # ====================================================
 # 📱 TELEGRAM
@@ -118,10 +116,12 @@ def reset_day():
         if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN + VIDA DE SESIÓN (SOLUCIÓN PRINCIPAL)
+# 🔌 CONEXIÓN ESTABLE — SOLUCIÓN CLAVE
 # ====================================================
+from iqoptionapi.stable_api import IQ_Option
+
 def connect():
-    global IQ_API, LAST_SUCCESS
+    global IQ_API
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
@@ -130,46 +130,52 @@ def connect():
                 time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
-            if IQ_API and hasattr(IQ_API, "close_connect"):
-                try: IQ_API.close_connect()
-                except Exception as ce: logging.warning(f"Cierre: {ce}")
+            # Eliminar instancia anterior completamente
+            if 'IQ_API' in globals() and IQ_API is not None:
+                try:
+                    IQ_API.close_connect()
+                    del IQ_API
+                except:
+                    pass
+            IQ_API = None
+            time.sleep(1) # Espera limpieza
+
+            # Crear nueva instancia + espera extra
             IQ_API = IQ_Option(EMAIL, PASSWORD)
-            # ⏱️ Tiempo de espera mayor al conectar en la nube
             ok, reason = IQ_API.connect()
+            time.sleep(2) # ⏱️ Fundamental para Railway: deja que termine handshake
+
             if ok:
-                IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si deseas
+                IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si vas a operar real
                 balance = IQ_API.get_balance()
-                LAST_SUCCESS = time.time()
                 send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                 return IQ_API
             else:
-                logging.warning(f"Intento {attempts+1}: {reason}")
+                logging.warning(f"Intento {attempts+1} fallido: {reason}")
         except Exception as e:
             logging.error(f"Error conexión: {str(e)}")
         attempts += 1
         time.sleep(RECONNECT_DELAY)
-    send("💥 Demasiados fallos — reinicio completo en 40 seg")
+    send("💥 Reinicio completo en 40 segundos…")
     time.sleep(40)
     return connect()
 
 def ensure_connection():
-    """Verificación doble: estado + tiempo sin actividad"""
-    global IQ_API, LAST_SUCCESS
+    """Verificación estricta antes de cada llamada"""
+    global IQ_API
     try:
         if IQ_API and IQ_API.check_connect():
-            # Reinicia si pasan más de 45 seg sin respuesta
-            if time.time() - LAST_SUCCESS < 45:
-                return True
+            return True
     except Exception as e:
-        logging.warning(f"Desconexión: {e}")
+        logging.warning(f"Conexión perdida: {e}")
     logging.info("⚠️ Reconectando para evitar 'need reconnect'…")
     IQ_API = connect()
     return IQ_API is not None
 
 # ====================================================
-# 📥 OBTENER VELAS — TRATAMIENTO EXACTO DEL ERROR
+# 📥 OBTENER VELAS — SIN ERRORES
 # ====================================================
-def get_df(iq, pair, retries=5):
+def get_df(iq, pair, retries=4):
     for _ in range(retries):
         try:
             if not ensure_connection():
@@ -177,18 +183,17 @@ def get_df(iq, pair, retries=5):
                 continue
             data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
             if not data or len(data) < 10:
-                time.sleep(0.4)
+                time.sleep(0.5)
                 continue
             df = pd.DataFrame(data)
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
-            LAST_SUCCESS = time.time() # ✅ Marca actividad válida
             return df
         except Exception as e:
             err = str(e).lower()
             logging.error(f"{pair}: {err}")
-            if "reconnect" in err or "connection" in err or "timed out" in err:
-                ensure_connection() # Recuperación inmediata
+            if "reconnect" in err or "connection" in err:
+                ensure_connection() # Recuperación inmediata al error
             time.sleep(ESPERA_TRAS_ERROR)
     return None
 
@@ -207,7 +212,6 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
             time.sleep(TIEMPO_ESPERA_EJECUCION)
             ok, tid = iq.buy(monto, par, direccion, vencimiento)
             if ok and tid>0:
-                LAST_SUCCESS = time.time()
                 return True, tid
             if intento<REINTENTOS_EJECUCION: time.sleep(0.4)
         except Exception as e:
@@ -259,7 +263,6 @@ def main():
                         time.sleep(65)
                         try:
                             res = IQ_API.check_win_v4(tid)
-                            LAST_SUCCESS = time.time()
                             if res<0:
                                 LOSS_STREAK+=1; LAST_LOSS=time.time()
                                 send(f"❌ -${abs(res):.2f} | Racha {LOSS_STREAK}")
@@ -289,7 +292,7 @@ def main():
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
                     send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
-            time.sleep(0.08) # Menos carga de CPU
+            time.sleep(0.1) # Evita saturación CPU/red
         except Exception as e:
             send(f"💥 Error: {str(e)} — reconectando…")
             logging.exception("Error global")
@@ -299,6 +302,6 @@ def main():
 if __name__ == "__main__":
     req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
     faltan = [v for v in req if not os.getenv(v)]
-    if faltan: print(f"❌ Faltan vars: {faltan}"); sys.exit(1)
+    if faltan: print(f"❌ Faltan variables: {faltan}"); sys.exit(1)
     if not os.path.exists("strategy.py"): print("❌ Falta strategy.py"); sys.exit(1)
     main()
