@@ -1,6 +1,6 @@
-iqoptionapi==5.5.0
+iqoptionapi==5.0.3
 python-dotenv==1.0.1
-pandas==2.2.2
+pandas==2.1.4
 numpy==1.26.4
 requests==2.31.0
 python-telegram-bot==13.7
