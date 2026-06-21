@@ -8,7 +8,7 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-# ✅ BLOQUEO TOTAL A NIVEL DE DESCRIPTORES — INTERCEPTA INCLUSO print() CRUDO
+# ✅ BLOQUEO TOTAL A NIVEL DE DESCRIPTORES — SIN RASTRO DE ERRORES
 class BlockOutput:
     def __init__(self):
         self._stdout_fd = os.dup(1)
@@ -37,7 +37,7 @@ with BlockOutput():
     from strategy import get_reversal_signal
     from iqoptionapi.stable_api import IQ_Option
 
-# ✅ REACTIVAMOS SOLO TUS MENSAJES — FORZADO
+# ✅ REACTIVAMOS SOLO TUS MENSAJES
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
@@ -47,7 +47,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN CONEXIÓN PERMANENTE
+# ⚙️ CONFIGURACIÓN
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -69,11 +69,10 @@ MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 99999
 RECONNECT_DELAY = 1.0
-KEEPALIVE_INTERVAL = 7       # Ping rápido: evita corte Railway
-MAX_SILENCE = 10             # Reinicia si 10s sin respuesta
-TIEMPO_ESPERA_EJECUCION = 0.01
+KEEPALIVE_INTERVAL = 7
+MAX_SILENCE = 10
 REINTENTOS_EJECUCION = 8
-TIEMPO_MINIMO_VALIDO = 55
+TIEMPO_EJECUCION_SEG = 1.5  # ✅ Entra entre segundo 1 y 2 justo al abrir
 
 FUERZA_MINIMA = 28
 TOLERANCIA_NIVEL = 0.0032
@@ -86,7 +85,7 @@ LOSS_STREAK = 0
 LAST_LOSS = 0
 LAST_TRADE = None
 BOT_RUNNING = False
-SEÑAL_PENDIENTE = None
+SEÑAL_PARA_EJECUTAR = None  # ✅ Guarda señal hasta cambio de vela
 LAST_PING = 0
 ULTIMA_RESPUESTA = time.time()
 
@@ -126,8 +125,8 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ BOT ACTIVADO — conexión blindada")
-                        logging.info("✅ BOT INICIADO | CONEXIÓN PERMANENTE")
+                        send("✅ BOT ACTIVADO — Analiza toda la vela, entra al abrir la siguiente")
+                        logging.info("✅ BOT INICIADO | ESTRATEGIA: Analiza toda vela → Entra al abrir siguiente")
                     else:
                         send("ℹ️ Ya está analizando")
                 elif text == "/stop":
@@ -141,13 +140,13 @@ def listen_commands():
 # 🔄 REINICIO DIARIO
 # ====================================================
 def reset_day():
-    global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PENDIENTE
+    global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PARA_EJECUTAR
     hoy = datetime.now(timezone.utc).day
     if hoy != CURRENT_DAY:
         DAILY_TRADES = LOSS_STREAK = 0
-        LAST_TRADE = SEÑAL_PENDIENTE = None
+        LAST_TRADE = SEÑAL_PARA_EJECUTAR = None
         CURRENT_DAY = hoy
-        logging.info("🔄 Nuevo ciclo — todo listo")
+        logging.info("🔄 Nuevo ciclo — contadores reiniciados")
 
 # ====================================================
 # 🔌 CONEXIÓN PERMANENTE
@@ -161,7 +160,6 @@ def connect():
                 send("❌ Faltan credenciales IQ")
                 time.sleep(5)
                 continue
-            # Bloqueo absoluto al conectar
             with BlockOutput():
                 iq = IQ_Option(EMAIL, PASSWORD)
                 ok, _ = iq.connect()
@@ -203,15 +201,14 @@ def keep_alive_check(iq):
     return connect()
 
 # ====================================================
-# 📥 VELAS — SIN RUIDO NINGUNO
+# 📥 VELAS — SIN RUIDO
 # ====================================================
 def get_df(iq, pair, retries=4):
     for _ in range(retries):
         try:
             iq = keep_alive_check(iq)
             if not iq: continue
-            logging.info(f"🔍 Analizando par: {pair}")
-            # ✅ BLOQUEO EN LA LLAMADA QUE GENERA EL ERROR
+            logging.info(f"🔍 Analizando par: {pair} — durante toda la vela")
             with BlockOutput():
                 data = iq.get_candles(pair, TIMEFRAME_M1, 22, time.time())
             if not data or len(data) < 8:
@@ -226,23 +223,23 @@ def get_df(iq, pair, retries=4):
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN
+# 🚀 EJECUCIÓN — JUSTO AL ABRIR VELA
 # ====================================================
-def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
+def ejecutar_operacion_al_abrir(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
         try:
             iq = keep_alive_check(iq)
             if not iq: continue
             ts = iq.get_server_timestamp()
-            sec_rest = 60 - (ts % 60)
-            if sec_rest < TIEMPO_MINIMO_VALIDO:
-                return False, None
-            time.sleep(TIEMPO_ESPERA_EJECUCION)
-            with BlockOutput():
-                ok, tid = iq.buy(monto, par, direccion, vencimiento)
-            if ok and tid > 0:
-                logging.info(f"✅ Operación ejecutada: {par} | {direccion.upper()}")
-                return True, tid
+            sec = ts % 60
+            # ✅ Ejecuta estrictamente entre segundo 1 y 2
+            if 1 <= sec <= 2:
+                time.sleep(TIEMPO_EJECUCION_SEG - 1)
+                with BlockOutput():
+                    ok, tid = iq.buy(monto, par, direccion, vencimiento)
+                if ok and tid > 0:
+                    logging.info(f"✅ EJECUTADO AL ABRIR VELA: {par} | {direccion.upper()} | Seg: {sec}")
+                    return True, tid
             if intento < REINTENTOS_EJECUCION:
                 time.sleep(0.1)
         except Exception:
@@ -250,14 +247,14 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL
+# 🧠 BUCLE PRINCIPAL — LÓGICA NUEVA
 # ====================================================
 def main():
-    global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
+    global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PARA_EJECUTAR
     threading.Thread(target=listen_commands, daemon=True).start()
     iq = connect()
-    last_candle = None
-    logging.info("ℹ️ SISTEMA LISTO — conexión blindada activa")
+    vela_anterior = None
+    logging.info("ℹ️ SISTEMA LISTO — Analiza toda la vela, entra segundo 1‑2 siguiente")
     send("ℹ️ SISTEMA LISTO — usa /start")
 
     while True:
@@ -283,23 +280,26 @@ def main():
                     continue
                 LOSS_STREAK = 0
 
-            st = iq.get_server_timestamp()
-            sec = st % 60
-            current_candle = int(st // 60)
+            # Tiempo servidor
+            ts = iq.get_server_timestamp()
+            segundo_actual = ts % 60
+            vela_actual = int(ts // 60)
 
-            if current_candle != last_candle:
-                last_candle = current_candle
-                if SEÑAL_PENDIENTE:
-                    p, sig, fz, tn = SEÑAL_PENDIENTE
-                    SEÑAL_PENDIENTE = None
+            # ✅ DETECTA CAMBIO DE VELA → EJECUTA EN SEG 1‑2
+            if vela_actual != vela_anterior:
+                vela_anterior = vela_actual
+                if SEÑAL_PARA_EJECUTAR:
+                    p, sig, fz, tn = SEÑAL_PARA_EJECUTAR
+                    SEÑAL_PARA_EJECUTAR = None
                     if (p, sig) == LAST_TRADE: continue
                     LAST_TRADE = (p, sig)
-                    send(f"""🚀 {p} | {tn} | {fz}
+                    send(f"""🚀 SEÑAL LISTA PARA EJECUCIÓN AL ABRIR
+📈 {p} | {tn} | Fuerza: {fz}
 {'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
-                    ok, tid = ejecutar_operacion(iq, BASE_AMOUNT, p, sig, EXPIRATION)
+                    ok, tid = ejecutar_operacion_al_abrir(iq, BASE_AMOUNT, p, sig, EXPIRATION)
                     if ok:
                         DAILY_TRADES += 1
-                        send(f"✅ Abierta — Total: {DAILY_TRADES}")
+                        send(f"✅ ABIERTA AL ABRIR VELA — Total: {DAILY_TRADES}")
                         time.sleep(62)
                         try:
                             with BlockOutput():
@@ -314,7 +314,8 @@ def main():
                         except Exception:
                             pass
 
-            if 10 <= sec <= 58:
+            # ✅ ANALIZA CONDICIONES DURANTE TODA LA VELA (desde seg 3 hasta seg 59)
+            if 3 <= segundo_actual <= 59:
                 mejor = None
                 max_fz = 0
                 for par in PAIRS:
@@ -327,10 +328,10 @@ def main():
                             max_fz = fz
                             mejor = (par, sig, fz, tn)
                 if mejor:
-                    SEÑAL_PENDIENTE = mejor
+                    SEÑAL_PARA_EJECUTAR = mejor
                     p, sig, fz, tn = mejor
-                    logging.info(f"🎯 Señal encontrada: {p} | {tn} | Fuerza: {fz}")
-                    send(f"🔍 Señal: {p} {tn} | {fz}")
+                    logging.info(f"🎯 SEÑAL VALIDADA EN VELA ACTUAL: {p} | {tn} | Fuerza: {fz} — EJECUCIÓN AL ABRIR SIGUIENTE")
+                    send(f"🔍 Señal confirmada: {p} | Entra al abrir próxima vela")
 
             time.sleep(0.03)
 
