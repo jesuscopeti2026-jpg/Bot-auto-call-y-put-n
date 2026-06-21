@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN PARA RAILWAY / CLOUD
+# ⚙️ CONFIGURACIÓN PARA RAILWAY
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -36,20 +36,21 @@ PARES = [
 MAX_DAILY_TRADES = 100
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
-MAX_RECONNECT_ATTEMPTS = 15
-RECONNECT_DELAY = 5
-RECONNECT_DELAY_LONG = 30
-PING_INTERVAL = 20           # Comprobar conexión cada 20 seg
-MAX_SILENCE = 45             # Reiniciar si no hay datos 45 seg
+MAX_RECONNECT_ATTEMPTS = 12
+RECONNECT_DELAY = 8          # Más lento para no ser bloqueado
+RECONNECT_DELAY_LONG = 60    # Espera larga tras fallos
+PING_INTERVAL = 12
+MAX_SILENCE = 30             # Reinicio MUY rápido
+SOCKET_TIMEOUT = 10          # ⏱️ NUEVO: timeout explícito
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
 VENTANA_NIVELES = 5
 
-TIEMPO_ESPERA_EJECUCION = 0.3
+TIEMPO_ESPERA_EJECUCION = 0.4
 REINTENTOS_EJECUCION = 4
 TIEMPO_MINIMO_VALIDO = 57
-ESPERA_TRAS_ERROR = 1.2
+ESPERA_TRAS_ERROR = 1.5
 
 # Variables globales
 DAILY_TRADES = 0
@@ -60,7 +61,6 @@ LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
 IQ_API = None
-LAST_PING = 0
 LAST_DATA = 0
 
 # ====================================================
@@ -72,7 +72,7 @@ def send(msg):
             requests.post(
                 f"https://api.telegram.org/bot{TOKEN}/sendMessage",
                 data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-                timeout=12
+                timeout=15
             )
         except Exception as e:
             logging.error(f"Telegram: {str(e)}")
@@ -121,12 +121,12 @@ def reset_day():
         if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN + PING MANUAL — CLAVE DEL ÉXITO
+# 🔌 CONEXIÓN CON VALIDACIÓN REAL
 # ====================================================
 from iqoptionapi.stable_api import IQ_Option
 
 def connect():
-    global IQ_API, LAST_PING, LAST_DATA
+    global IQ_API, LAST_DATA
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
@@ -135,65 +135,62 @@ def connect():
                 time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
-            # ✅ Limpieza total para evitar sesiones fantasma
+            # Limpieza total
             if IQ_API is not None:
-                try:
-                    IQ_API.close_connect()
-                except:
-                    pass
+                try: IQ_API.close_connect()
+                except: pass
                 IQ_API = None
                 gc.collect()
-            time.sleep(2)
+            time.sleep(3)
 
             IQ_API = IQ_Option(EMAIL, PASSWORD)
+            # ⏱️ Aplicar timeout a la librería
+            IQ_API.timeout = SOCKET_TIMEOUT
             ok, reason = IQ_API.connect()
-            time.sleep(3) # Tiempo extra para estabilizar WebSocket
+            time.sleep(4) # Espera extra para nube
 
             if ok:
-                IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si deseas
-                balance = IQ_API.get_balance()
-                LAST_PING = LAST_DATA = time.time()
-                send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
-                return IQ_API
+                # ✅ VALIDACIÓN REAL: no basta con conectar, debe traer datos
+                try:
+                    _ = IQ_API.get_server_timestamp()
+                    IQ_API.change_balance("PRACTICE")
+                    balance = IQ_API.get_balance()
+                    LAST_DATA = time.time()
+                    send(f"✅ CONECTADO Y ACTIVO | Saldo: ${balance:.2f}")
+                    return IQ_API
+                except Exception as val_e:
+                    logging.warning(f"Conectado pero sin datos: {val_e}")
+                    ok = False
             else:
                 logging.warning(f"Intento {attempts+1}: {reason}")
         except Exception as e:
             logging.error(f"Error conexión: {str(e)}")
         attempts += 1
         time.sleep(RECONNECT_DELAY)
-    send("💥 Reinicio completo en 40 seg…")
-    time.sleep(40)
+    send("💥 Demasiados fallos — pausa larga 60s…")
+    time.sleep(RECONNECT_DELAY_LONG)
     return connect()
 
-def ping_server():
-    """Mantiene conexión viva sin esperar errores"""
-    global LAST_PING, LAST_DATA
-    try:
-        if IQ_API and IQ_API.check_connect():
-            _ = IQ_API.get_server_timestamp()
-            LAST_PING = time.time()
-            return True
-    except:
-        return False
-    return False
-
 def ensure_connection():
-    """Verificación PREVENTIVA: reconecta ANTES de que falle"""
+    """Verifica que realmente responda, no solo que marque conectado"""
     global IQ_API, LAST_DATA
     now = time.time()
-    # Ping periódico
-    if now - LAST_PING > PING_INTERVAL:
-        ping_server()
-    # Reinicio si no hay actividad
-    if not IQ_API or not IQ_API.check_connect() or (now - LAST_DATA > MAX_SILENCE):
-        logging.warning("⚠️ Sesión inactiva o rota — reiniciando…")
-        IQ_API = connect()
+    try:
+        if IQ_API and IQ_API.check_connect():
+            # Ping real
+            _ = IQ_API.get_server_timestamp()
+            LAST_DATA = now
+            return True
+    except Exception as e:
+        logging.warning(f"Conexión caída/falsa: {e}")
+    logging.info("🔄 Reconectando desde cero…")
+    IQ_API = connect()
     return IQ_API is not None
 
 # ====================================================
 # 📥 OBTENER VELAS — LLAMADA SEGURA
 # ====================================================
-def get_df(iq, pair, retries=5):
+def get_df(iq, pair, retries=4):
     global LAST_DATA
     for _ in range(retries):
         try:
@@ -202,24 +199,23 @@ def get_df(iq, pair, retries=5):
                 continue
             data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
             if not data or len(data) < 10:
-                time.sleep(0.5)
+                time.sleep(0.6)
                 continue
             df = pd.DataFrame(data)
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
-            LAST_DATA = time.time() # ✅ Confirma actividad válida
+            LAST_DATA = time.time()
             return df
         except Exception as e:
             err = str(e).lower()
             logging.error(f"{pair}: {err}")
-            # ✅ Reconexión inmediata solo al error exacto
-            if "need reconnect" in err or "connection" in err or "timed out" in err:
+            if "need reconnect" in err or "websocket" in err or "timed out" in err:
                 ensure_connection()
             time.sleep(ESPERA_TRAS_ERROR)
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN SEGURA
+# 🚀 EJECUCIÓN
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION+1):
@@ -234,7 +230,7 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
             ok, tid = iq.buy(monto, par, direccion, vencimiento)
             if ok and tid>0:
                 return True, tid
-            if intento<REINTENTOS_EJECUCION: time.sleep(0.4)
+            if intento<REINTENTOS_EJECUCION: time.sleep(0.5)
         except Exception as e:
             logging.error(f"Operación: {e}")
             ensure_connection()
@@ -313,11 +309,11 @@ def main():
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
                     send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
-            time.sleep(0.1)
+            time.sleep(0.15) # Menos solicitudes = menos cortes
         except Exception as e:
             send(f"💥 Error: {str(e)} — reconectando…")
             logging.exception("Error global")
-            time.sleep(3)
+            time.sleep(4)
             ensure_connection()
 
 if __name__ == "__main__":
