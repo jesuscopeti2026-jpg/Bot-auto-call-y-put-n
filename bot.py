@@ -8,15 +8,26 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-# 🔇 SILENCIAMOS COMPLETAMENTE LOS ERRORES DE LA LIBRERÍA IQ
-logging.getLogger("iqoptionapi").setLevel(logging.CRITICAL + 1)
-logging.getLogger("websocket").setLevel(logging.CRITICAL + 1)
+# ✅ BLOQUEO ABSOLUTO DE SALIDA DE ERRORES DE LA LIBRERÍA
+class SuppressStdErr:
+    def __enter__(self):
+        self._stderr = sys.stderr
+        sys.stderr = open(os.devnull, "w")
+    def __exit__(self, *args):
+        sys.stderr.close()
+        sys.stderr = self._stderr
+
+# Silenciar todos los niveles de log de librerías externas
+logging.getLogger("iqoptionapi").setLevel(logging.CRITICAL + 10)
+logging.getLogger("websocket").setLevel(logging.CRITICAL + 10)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-from strategy import get_reversal_signal
-from iqoptionapi.stable_api import IQ_Option
+# Importar sin que imprima nada
+with SuppressStdErr():
+    from strategy import get_reversal_signal
+    from iqoptionapi.stable_api import IQ_Option
 
-# ✅ FORMATO DE REGISTRO LIMPIO, SOLO LO QUE TÚ QUIERES VER
+# ✅ FORMATO LIMPIO SOLO PARA TUS MENSAJES
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
@@ -25,7 +36,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN — IGUALADA A TU ESTRATEGIA
+# ⚙️ CONFIGURACIÓN DE CONEXIÓN PERMANENTE
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -45,19 +56,19 @@ PAIRS = [
 MAX_DAILY_TRADES = 200
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
-MAX_RECONNECT_ATTEMPTS = 15
-RECONNECT_DELAY = 1.5
-KEEPALIVE_INTERVAL = 10
+MAX_RECONNECT_ATTEMPTS = 99999  # ✅ Reintentos ilimitados
+RECONNECT_DELAY = 1.2
+KEEPALIVE_INTERVAL = 8         # ✅ Ping MUY frecuente (antes de corte Railway)
+MAX_SILENCE = 12               # ✅ Reinicia si 12s sin respuesta
+TIEMPO_ESPERA_EJECUCION = 0.01
+REINTENTOS_EJECUCION = 8
+TIEMPO_MINIMO_VALIDO = 55
 
 FUERZA_MINIMA = 28
 TOLERANCIA_NIVEL = 0.0032
 VENTANA_NIVELES = 4
 
-TIEMPO_ESPERA_EJECUCION = 0.01
-REINTENTOS_EJECUCION = 6
-TIEMPO_MINIMO_VALIDO = 55
-
-# Variables globales
+# Variables de control
 DAILY_TRADES = 0
 CURRENT_DAY = datetime.now(timezone.utc).day
 LOSS_STREAK = 0
@@ -66,6 +77,8 @@ LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
 LAST_PING = 0
+ULTIMA_RESPUESTA = time.time()
+CONEXION_ESTABLE = False
 
 # ====================================================
 # 📱 TELEGRAM
@@ -99,16 +112,14 @@ def listen_commands():
                 last_update_id = update["update_id"]
                 text = update.get("message", {}).get("text", "").strip().lower()
                 chat_id = str(update["message"]["chat"]["id"])
-                if chat_id != str(CHAT_ID):
-                    continue
+                if chat_id != str(CHAT_ID): continue
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ BOT ACTIVADO — análisis y operaciones activas")
-                        logging.info("✅ BOT INICIADO")
+                        send("✅ BOT ACTIVADO — conexión permanente activa")
+                        logging.info("✅ BOT INICIADO | CONEXIÓN PERMANENTE")
                     else:
-                        send("ℹ️ Ya está analizando")
-                        logging.info("ℹ️ Ya activo")
+                        send("ℹ️ Ya está conectado y analizando")
                 elif text == "/stop":
                     BOT_RUNNING = False
                     send("🛑 Detenido")
@@ -126,31 +137,31 @@ def reset_day():
         DAILY_TRADES = LOSS_STREAK = 0
         LAST_TRADE = SEÑAL_PENDIENTE = None
         CURRENT_DAY = hoy
-        logging.info("🔄 Nuevo día — contadores reiniciados")
+        if CONEXION_ESTABLE:
+            logging.info("🔄 Nuevo ciclo diario — conexión mantenida")
 
 # ====================================================
-# 🔌 CONEXIÓN — SIN RUIDO
+# 🔌 CONEXIÓN PERMANENTE — NUNCA SE RINDE
 # ====================================================
 def connect():
-    global LAST_PING
+    global LAST_PING, ULTIMA_RESPUESTA, CONEXION_ESTABLE
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
             if not EMAIL or not PASSWORD:
                 send("❌ Faltan credenciales IQ")
-                logging.error("❌ Faltan credenciales IQ")
                 time.sleep(5)
-                attempts += 1
                 continue
             iq = IQ_Option(EMAIL, PASSWORD)
             ok, _ = iq.connect()
-            time.sleep(0.8)
+            time.sleep(0.6)
             if ok:
                 try:
                     _ = iq.get_server_timestamp()
                     iq.change_balance("PRACTICE")
                     balance = iq.get_balance()
-                    LAST_PING = time.time()
+                    LAST_PING = ULTIMA_RESPUESTA = time.time()
+                    CONEXION_ESTABLE = True
                     send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                     logging.info(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                     return iq
@@ -161,56 +172,65 @@ def connect():
         except Exception:
             attempts += 1
             time.sleep(RECONNECT_DELAY)
-    logging.info("⏳ Reintentando conexión…")
-    time.sleep(20)
+    CONEXION_ESTABLE = False
+    logging.info("⏳ Ciclo de reconexión infinito activo")
     return connect()
 
-def check_and_reconnect(iq):
-    global LAST_PING
+def keep_alive_check(iq):
+    """Mantiene conexión viva y detecta caídas antes de fallar"""
+    global LAST_PING, ULTIMA_RESPUESTA, CONEXION_ESTABLE
     ahora = time.time()
     try:
         if iq and iq.check_connect():
+            # ✅ Ping constante para evitar corte
             if ahora - LAST_PING > KEEPALIVE_INTERVAL:
-                iq.get_server_timestamp()
+                with SuppressStdErr():
+                    _ = iq.get_server_timestamp()
                 LAST_PING = ahora
+                ULTIMA_RESPUESTA = ahora
+                CONEXION_ESTABLE = True
+            # ✅ Reinicia si no hay respuesta prolongada
+            if ahora - ULTIMA_RESPUESTA > MAX_SILENCE:
+                logging.info("⚠️ Sin respuesta — refrescando conexión")
+                CONEXION_ESTABLE = False
+                return connect()
             return iq
     except Exception:
-        pass
-    logging.info("🔁 Reconexión automática…")
+        CONEXION_ESTABLE = False
+    logging.info("🔁 Reconexión automática inmediata")
     return connect()
 
 # ====================================================
-# 📥 VELAS — BLOQUEA ERRORES Y MUESTRA SOLO ANÁLISIS
+# 📥 VELAS — SIN RASTROS DE ERROR
 # ====================================================
-def get_df(iq, pair, retries=3):
+def get_df(iq, pair, retries=4):
     for _ in range(retries):
         try:
-            iq = check_and_reconnect(iq)
+            iq = keep_alive_check(iq)
             if not iq:
                 continue
-            # ✅ MENSAJE VISIBLE EN RAILWAY
             logging.info(f"🔍 Analizando par: {pair}")
-            data = iq.get_candles(pair, TIMEFRAME_M1, 22, time.time())
+            with SuppressStdErr():
+                data = iq.get_candles(pair, TIMEFRAME_M1, 22, time.time())
             if not data or len(data) < 8:
                 continue
             df = pd.DataFrame(data)
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
+            ULTIMA_RESPUESTA = time.time()
             return df
         except Exception:
-            # ❌ AQUÍ SE BLOQUEA EL ERROR SIN MOSTRARLO
             continue
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN — MENSAJE DE EJECUCIÓN
+# 🚀 EJECUCIÓN SEGURA
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
         try:
-            iq = check_and_reconnect(iq)
-            if not iq:
-                continue
+            iq = keep_alive_check(iq)
+            if not iq: continue
             ts = iq.get_server_timestamp()
             sec_rest = 60 - (ts % 60)
             if sec_rest < TIEMPO_MINIMO_VALIDO:
@@ -218,24 +238,23 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
             time.sleep(TIEMPO_ESPERA_EJECUCION)
             ok, tid = iq.buy(monto, par, direccion, vencimiento)
             if ok and tid > 0:
-                # ✅ MENSAJE VISIBLE EN RAILWAY
                 logging.info(f"✅ Operación ejecutada: {par} | {direccion.upper()}")
                 return True, tid
             if intento < REINTENTOS_EJECUCION:
                 time.sleep(0.1)
         except Exception:
-            iq = check_and_reconnect(iq)
+            iq = keep_alive_check(iq)
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL — REGISTROS LIMPIOS
+# 🧠 BUCLE PRINCIPAL — NUNCA SE DETIENE
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
     threading.Thread(target=listen_commands, daemon=True).start()
     iq = connect()
     last_candle = None
-    logging.info("ℹ️ SISTEMA LISTO — usa /start")
+    logging.info("ℹ️ SISTEMA LISTO | Conexión permanente configurada")
     send("ℹ️ SISTEMA LISTO — usa /start")
 
     while True:
@@ -244,9 +263,9 @@ def main():
                 time.sleep(0.2)
                 continue
             reset_day()
-            iq = check_and_reconnect(iq)
+            iq = keep_alive_check(iq)
             if not iq:
-                time.sleep(0.5)
+                time.sleep(0.3)
                 continue
 
             if DAILY_TRADES >= MAX_DAILY_TRADES:
@@ -265,14 +284,12 @@ def main():
             sec = st % 60
             current_candle = int(st // 60)
 
-            # Ejecutar señal al cambio de vela
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
                     p, sig, fz, tn = SEÑAL_PENDIENTE
                     SEÑAL_PENDIENTE = None
-                    if (p, sig) == LAST_TRADE:
-                        continue
+                    if (p, sig) == LAST_TRADE: continue
                     LAST_TRADE = (p, sig)
                     send(f"""🚀 {p} | {tn} | {fz}
 {'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
@@ -293,7 +310,6 @@ def main():
                         except Exception:
                             pass
 
-            # Buscar señales
             if 10 <= sec <= 58:
                 mejor = None
                 max_fz = 0
@@ -310,24 +326,21 @@ def main():
                 if mejor:
                     SEÑAL_PENDIENTE = mejor
                     p, sig, fz, tn = mejor
-                    # ✅ MENSAJE VISIBLE EN RAILWAY
                     logging.info(f"🎯 Señal encontrada: {p} | {tn} | Fuerza: {fz}")
                     send(f"🔍 Señal: {p} {tn} | {fz}")
 
             time.sleep(0.03)
 
         except Exception:
-            logging.info("ℹ️ Recuperando…")
-            time.sleep(1)
-            iq = check_and_reconnect(iq)
+            logging.info("ℹ️ Recuperación automática en curso")
+            time.sleep(0.8)
+            iq = keep_alive_check(iq)
 
 if __name__ == "__main__":
     req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
     faltan = [v for v in req if not os.getenv(v)]
     if faltan:
-        print(f"❌ Faltan variables: {faltan}")
-        sys.exit(1)
+        print(f"❌ Faltan variables: {faltan}"); sys.exit(1)
     if not os.path.exists("strategy.py"):
-        print("❌ Falta el archivo strategy.py")
-        sys.exit(1)
+        print("❌ Falta strategy.py"); sys.exit(1)
     main()
