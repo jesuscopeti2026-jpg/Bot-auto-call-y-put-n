@@ -93,7 +93,7 @@ def listen_commands():
             for update in data.get("result", []):
                 last_update_id = update["update_id"]
                 text = update.get("message", {}).get("text", "").strip().lower()
-                chat_id = str(update.get("message", {}).get("id"))
+                chat_id = str(update["message"]["chat"]["id"])
                 if chat_id != str(CHAT_ID): continue
                 if text == "/start":
                     if not BOT_RUNNING:
@@ -120,7 +120,7 @@ def reset_day():
         if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN CON VALIDACIÓN REAL
+# 🔌 CONEXIÓN ESTABLE (adaptada a v5.0.3)
 # ====================================================
 from iqoptionapi.stable_api import IQ_Option
 
@@ -134,7 +134,7 @@ def connect():
                 time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
-            # Limpieza total
+            # Limpieza total de sesiones anteriores
             if IQ_API is not None:
                 try: IQ_API.close_connect()
                 except: pass
@@ -144,18 +144,19 @@ def connect():
 
             IQ_API = IQ_Option(EMAIL, PASSWORD)
             ok, reason = IQ_API.connect()
-            time.sleep(4)
+            time.sleep(4) # Tiempo extra para estabilizar en nube
 
             if ok:
+                # Validación real: no basta con conectar, debe traer datos
                 try:
                     _ = IQ_API.get_server_timestamp()
-                    IQ_API.change_balance("PRACTICE")
+                    IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si usas cuenta real
                     balance = IQ_API.get_balance()
                     LAST_DATA = time.time()
-                    send(f"✅ CONECTADO Y ACTIVO | Saldo: ${balance:.2f}")
+                    send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                     return IQ_API
                 except Exception as val_e:
-                    logging.warning(f"Conectado pero sin datos: {val_e}")
+                    logging.warning(f"Conectado sin datos: {val_e}")
                     ok = False
             else:
                 logging.warning(f"Intento {attempts+1}: {reason}")
@@ -163,11 +164,12 @@ def connect():
             logging.error(f"Error conexión: {str(e)}")
         attempts += 1
         time.sleep(RECONNECT_DELAY)
-    send("💥 Demasiados fallos — pausa larga 60s…")
+    send("💥 Demasiados fallos — pausa 60s…")
     time.sleep(RECONNECT_DELAY_LONG)
     return connect()
 
 def ensure_connection():
+    """Verifica que la conexión realmente funcione"""
     global IQ_API, LAST_DATA
     now = time.time()
     try:
@@ -176,13 +178,13 @@ def ensure_connection():
             LAST_DATA = now
             return True
     except Exception as e:
-        logging.warning(f"Conexión caída/falsa: {e}")
-    logging.info("🔄 Reconectando desde cero…")
+        logging.warning(f"Conexión caída: {e}")
+    logging.info("🔄 Reconectando…")
     IQ_API = connect()
     return IQ_API is not None
 
 # ====================================================
-# 📥 OBTENER VELAS
+# 📥 OBTENER VELAS (sin errores de reconexión)
 # ====================================================
 def get_df(iq, pair, retries=4):
     global LAST_DATA
@@ -203,13 +205,13 @@ def get_df(iq, pair, retries=4):
         except Exception as e:
             err = str(e).lower()
             logging.error(f"{pair}: {err}")
-            if "need reconnect" in err or "websocket" in err or "timed out" in err:
+            if "need reconnect" in err or "websocket" in err:
                 ensure_connection()
             time.sleep(ESPERA_TRAS_ERROR)
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN
+# 🚀 EJECUCIÓN SEGURA
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION+1):
