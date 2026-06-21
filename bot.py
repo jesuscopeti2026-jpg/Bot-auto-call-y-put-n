@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN OPTIMIZADA RAILWAY
+# ⚙️ CONFIGURACIÓN ANTI‑CORTE — LA CLAVE
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -29,7 +29,6 @@ EXPIRATION = 1
 BASE_AMOUNT = 91
 TIMEFRAME_M1 = 60
 
-# Pares OTC completos
 PAIRS = [
     "EURUSD-OTC", "GBPUSD-OTC", "EURGBP-OTC", "EURJPY-OTC", "GBPJPY-OTC",
     "AUDUSD-OTC", "USDCAD-OTC", "USDCHF-OTC", "NZDUSD-OTC",
@@ -40,8 +39,9 @@ MAX_DAILY_TRADES = 150
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 10
-RECONNECT_DELAY = 3
-KEEPALIVE_INTERVAL = 18  # Evita corte Railway
+RECONNECT_DELAY = 2
+KEEPALIVE_INTERVAL = 15   # ← Ping antes de que Railway corte (valor clave)
+MAX_SILENCE = 20          # ← Detecta caída antes de fallar
 
 FUERZA_MINIMA = 32
 TOLERANCIA_NIVEL = 0.0028
@@ -51,7 +51,7 @@ TIEMPO_ESPERA_EJECUCION = 0.02
 REINTENTOS_EJECUCION = 4
 TIEMPO_MINIMO_VALIDO = 58
 
-# Variables globales
+# Variables de control
 DAILY_TRADES = 0
 CURRENT_DAY = datetime.now(timezone.utc).day
 LOSS_STREAK = 0
@@ -60,6 +60,7 @@ LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
 LAST_PING = 0
+CONEXION_ESTABLE = True
 
 # ====================================================
 # 📱 TELEGRAM
@@ -99,7 +100,7 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ <b>BOT INICIADO</b>\nEstrategia: Reversión\nAnalizando pares…\nEjecución: vela siguiente")
+                        send("✅ <b>BOT INICIADO</b>\nAnálisis continuo | Recuperación automática activa")
                     else:
                         send("ℹ️ Ya está activo y analizando.")
                 elif text == "/stop":
@@ -124,10 +125,10 @@ def reset_day():
             send("🔄 <b>NUEVO DÍA</b> | Contadores reiniciados.")
 
 # ====================================================
-# 🔌 CONEXIÓN + MANTENIMIENTO
+# 🔌 CONEXIÓN — RECUPERA SOLO SI FALLA
 # ====================================================
 def connect():
-    global LAST_PING
+    global LAST_PING, CONEXION_ESTABLE
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
@@ -138,13 +139,14 @@ def connect():
                 continue
             iq = IQ_Option(EMAIL, PASSWORD)
             ok, reason = iq.connect()
-            time.sleep(2)
+            time.sleep(1)
             if ok:
                 try:
                     _ = iq.get_server_timestamp()
                     iq.change_balance("PRACTICE")
                     balance = iq.get_balance()
                     LAST_PING = time.time()
+                    CONEXION_ESTABLE = True
                     send(f"✅ <b>CONECTADO</b>\nSaldo: ${balance:.2f}")
                     return iq
                 except Exception:
@@ -154,30 +156,33 @@ def connect():
             logging.error(f"Conexión: {str(e)}")
         attempts += 1
         time.sleep(RECONNECT_DELAY)
-    send("💥 Reintentando en 60s...")
-    time.sleep(60)
+    CONEXION_ESTABLE = False
+    send("💥 Pausa 40s — reintentando…")
+    time.sleep(40)
     return connect()
 
-def check_and_reconnect(iq):
-    global LAST_PING
+def keep_alive(iq):
+    """Evita corte por inactividad sin saturar"""
+    global LAST_PING, CONEXION_ESTABLE
     ahora = time.time()
     try:
         if iq and iq.check_connect():
             if ahora - LAST_PING > KEEPALIVE_INTERVAL:
                 iq.get_server_timestamp()
                 LAST_PING = ahora
+                CONEXION_ESTABLE = True
             return iq
     except Exception:
-        pass
+        CONEXION_ESTABLE = False
     return connect()
 
 # ====================================================
-# 📥 OBTENER VELAS
+# 📥 OBTENER VELAS — TRATA ERROR Y SIGUE
 # ====================================================
-def get_df(iq, pair, retries=2):
+def get_df(iq, pair, retries=3):
     for _ in range(retries):
         try:
-            iq = check_and_reconnect(iq)
+            iq = keep_alive(iq)
             if not iq:
                 time.sleep(0.3)
                 continue
@@ -194,16 +199,16 @@ def get_df(iq, pair, retries=2):
             if "need reconnect" in err or "websocket" in err:
                 iq = connect()
             logging.error(f"{pair}: {str(e)}")
-            time.sleep(0.4)
+            time.sleep(0.5)
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN PRECISA
+# 🚀 EJECUCIÓN SEGURA
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
         try:
-            iq = check_and_reconnect(iq)
+            iq = keep_alive(iq)
             if not iq:
                 continue
             tiempo_servidor = iq.get_server_timestamp()
@@ -217,11 +222,11 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
             if intento < REINTENTOS_EJECUCION:
                 time.sleep(0.2)
         except Exception:
-            iq = check_and_reconnect(iq)
+            iq = keep_alive(iq)
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL: ANÁLISIS + SEÑAL + EJECUCIÓN
+# 🧠 BUCLE PRINCIPAL — NUNCA SE DETIENE
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
@@ -229,7 +234,7 @@ def main():
 
     iq = connect()
     last_candle = None
-    send("ℹ️ <b>SISTEMA LISTO</b>\nEnvía /start para comenzar a analizar y operar")
+    send("ℹ️ <b>SISTEMA LISTO</b>\nEnvía /start para operar — sin cortes automáticos")
 
     while True:
         try:
@@ -237,7 +242,7 @@ def main():
                 time.sleep(0.5)
                 continue
             reset_day()
-            iq = check_and_reconnect(iq)
+            iq = keep_alive(iq)
             if not iq:
                 time.sleep(1)
                 continue
@@ -262,7 +267,7 @@ def main():
             sec = server_time % 60
             current_candle = int(server_time // 60)
 
-            # ✅ EJECUTAR SEÑAL GUARDADA AL INICIO DE VELA
+            # Ejecutar señal pendiente
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
@@ -294,18 +299,18 @@ def main():
                                 send(f"✅ <b>GANADA</b> | +${res:.2f}")
                         except Exception as e:
                             send(f"⚠️ Verificación: {str(e)}")
-                            iq = check_and_reconnect(iq)
+                            iq = keep_alive(iq)
                     else:
                         send(f"❌ No se pudo ejecutar en {pair}")
 
-            # ✅ ANALIZA TODOS LOS PARES ENTRE 10‑58s
+            # Buscar señales — ritmo más lento para estabilidad
             if 10 <= sec <= 58:
                 mejor_opcion = None
                 mayor_fuerza = 0
                 for pair in PAIRS:
                     df = get_df(iq, pair)
                     if df is None:
-                        time.sleep(0.25)  # Evita saturación Railway
+                        time.sleep(0.3)  # ← Pausa mayor = menos cortes
                         continue
                     resultado = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
                     if resultado:
@@ -313,7 +318,6 @@ def main():
                         if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
                             mayor_fuerza = fuerza
                             mejor_opcion = (pair, signal, fuerza, tipo_nivel)
-                # ✅ GUARDA Y AVISA ANTES DE CAMBIAR VELA
                 if 55 <= sec <= 58 and mejor_opcion:
                     SEÑAL_PENDIENTE = mejor_opcion
                     pair, signal, fuerza, tipo_nivel = mejor_opcion
@@ -322,13 +326,13 @@ def main():
 💪 Fuerza: {fuerza}/100
 ⏳ Ejecución: vela siguiente""")
 
-            time.sleep(0.05)  # Estabilidad extra
+            time.sleep(0.08)  # ← Ciclo más suave
 
         except Exception as e:
-            send(f"💥 Error: {str(e)} — continuando…")
+            send(f"💥 Error: {str(e)} — recuperando…")
             logging.exception("Error global")
             time.sleep(2)
-            iq = check_and_reconnect(iq)
+            iq = keep_alive(iq)
 
 if __name__ == "__main__":
     try:
