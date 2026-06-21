@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN OPTIMIZADA PARA RAILWAY
+# ⚙️ CONFIGURACIÓN OPTIMIZADA RAILWAY
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -41,7 +41,7 @@ MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_DELAY = 3
-KEEPALIVE_INTERVAL = 18  # Evita corte por inactividad
+KEEPALIVE_INTERVAL = 18  # Evita corte Railway
 
 FUERZA_MINIMA = 32
 TOLERANCIA_NIVEL = 0.0028
@@ -99,9 +99,9 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ <b>BOT INICIADO</b>\nEjecución: vela siguiente | Optimizado Railway")
+                        send("✅ <b>BOT INICIADO</b>\nEstrategia: Reversión\nAnalizando pares…\nEjecución: vela siguiente")
                     else:
-                        send("ℹ️ Ya está activo.")
+                        send("ℹ️ Ya está activo y analizando.")
                 elif text == "/stop":
                     if BOT_RUNNING:
                         BOT_RUNNING = False
@@ -124,7 +124,7 @@ def reset_day():
             send("🔄 <b>NUEVO DÍA</b> | Contadores reiniciados.")
 
 # ====================================================
-# 🔌 CONEXIÓN + MANTENIMIENTO DE CANAL
+# 🔌 CONEXIÓN + MANTENIMIENTO
 # ====================================================
 def connect():
     global LAST_PING
@@ -132,7 +132,7 @@ def connect():
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
             if not EMAIL or not PASSWORD:
-                send("❌ ERROR: Credenciales IQ_EMAIL / IQ_PASSWORD faltantes.")
+                send("❌ ERROR: Credenciales IQ faltantes.")
                 time.sleep(10)
                 attempts += 1
                 continue
@@ -221,7 +221,7 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL
+# 🧠 BUCLE PRINCIPAL: ANÁLISIS + SEÑAL + EJECUCIÓN
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
@@ -229,7 +229,7 @@ def main():
 
     iq = connect()
     last_candle = None
-    send("ℹ️ <b>SISTEMA LISTO</b>\nEjecución: vela siguiente\nEnvía /start para operar")
+    send("ℹ️ <b>SISTEMA LISTO</b>\nEnvía /start para comenzar a analizar y operar")
 
     while True:
         try:
@@ -256,12 +256,13 @@ def main():
                 else:
                     LOSS_STREAK = 0
                     LAST_TRADE = None
-                    send("✅ Pausa finalizada.")
+                    send("✅ Pausa finalizada — volviendo a analizar")
 
             server_time = iq.get_server_timestamp()
             sec = server_time % 60
             current_candle = int(server_time // 60)
 
+            # ✅ EJECUTAR SEÑAL GUARDADA AL INICIO DE VELA
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
@@ -297,13 +298,14 @@ def main():
                     else:
                         send(f"❌ No se pudo ejecutar en {pair}")
 
+            # ✅ ANALIZA TODOS LOS PARES ENTRE 10‑58s
             if 10 <= sec <= 58:
                 mejor_opcion = None
                 mayor_fuerza = 0
                 for pair in PAIRS:
                     df = get_df(iq, pair)
                     if df is None:
-                        time.sleep(0.25)
+                        time.sleep(0.25)  # Evita saturación Railway
                         continue
                     resultado = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
                     if resultado:
@@ -311,16 +313,19 @@ def main():
                         if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
                             mayor_fuerza = fuerza
                             mejor_opcion = (pair, signal, fuerza, tipo_nivel)
+                # ✅ GUARDA Y AVISA ANTES DE CAMBIAR VELA
                 if 55 <= sec <= 58 and mejor_opcion:
                     SEÑAL_PENDIENTE = mejor_opcion
                     pair, signal, fuerza, tipo_nivel = mejor_opcion
                     send(f"""🔍 <b>SEÑAL DETECTADA</b>
-💹 {pair} | {tipo_nivel} | Fuerza: {fuerza}
+💹 {pair} | {tipo_nivel}
+💪 Fuerza: {fuerza}/100
 ⏳ Ejecución: vela siguiente""")
 
-            time.sleep(0.05)
+            time.sleep(0.05)  # Estabilidad extra
+
         except Exception as e:
-            send(f"💥 Error: {str(e)} | Recuperando…")
+            send(f"💥 Error: {str(e)} — continuando…")
             logging.exception("Error global")
             time.sleep(2)
             iq = check_and_reconnect(iq)
