@@ -37,11 +37,10 @@ MAX_DAILY_TRADES = 100
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 12
-RECONNECT_DELAY = 8          # Más lento para no ser bloqueado
-RECONNECT_DELAY_LONG = 60    # Espera larga tras fallos
+RECONNECT_DELAY = 8
+RECONNECT_DELAY_LONG = 60
 PING_INTERVAL = 12
-MAX_SILENCE = 30             # Reinicio MUY rápido
-SOCKET_TIMEOUT = 10          # ⏱️ NUEVO: timeout explícito
+MAX_SILENCE = 30
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
@@ -94,7 +93,7 @@ def listen_commands():
             for update in data.get("result", []):
                 last_update_id = update["update_id"]
                 text = update.get("message", {}).get("text", "").strip().lower()
-                chat_id = str(update["message"]["chat"]["id"])
+                chat_id = str(update.get("message", {}).get("id"))
                 if chat_id != str(CHAT_ID): continue
                 if text == "/start":
                     if not BOT_RUNNING:
@@ -144,13 +143,10 @@ def connect():
             time.sleep(3)
 
             IQ_API = IQ_Option(EMAIL, PASSWORD)
-            # ⏱️ Aplicar timeout a la librería
-            IQ_API.timeout = SOCKET_TIMEOUT
             ok, reason = IQ_API.connect()
-            time.sleep(4) # Espera extra para nube
+            time.sleep(4)
 
             if ok:
-                # ✅ VALIDACIÓN REAL: no basta con conectar, debe traer datos
                 try:
                     _ = IQ_API.get_server_timestamp()
                     IQ_API.change_balance("PRACTICE")
@@ -172,12 +168,10 @@ def connect():
     return connect()
 
 def ensure_connection():
-    """Verifica que realmente responda, no solo que marque conectado"""
     global IQ_API, LAST_DATA
     now = time.time()
     try:
         if IQ_API and IQ_API.check_connect():
-            # Ping real
             _ = IQ_API.get_server_timestamp()
             LAST_DATA = now
             return True
@@ -188,7 +182,7 @@ def ensure_connection():
     return IQ_API is not None
 
 # ====================================================
-# 📥 OBTENER VELAS — LLAMADA SEGURA
+# 📥 OBTENER VELAS
 # ====================================================
 def get_df(iq, pair, retries=4):
     global LAST_DATA
@@ -309,7 +303,7 @@ def main():
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
                     send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
-            time.sleep(0.15) # Menos solicitudes = menos cortes
+            time.sleep(0.15)
         except Exception as e:
             send(f"💥 Error: {str(e)} — reconectando…")
             logging.exception("Error global")
