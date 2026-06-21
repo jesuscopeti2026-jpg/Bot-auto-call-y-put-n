@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN OPTIMIZADA PARA RAILWAY
+# ⚙️ CONFIGURACIÓN PARA RAILWAY
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -39,7 +39,7 @@ PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 12
 RECONNECT_DELAY = 8
 RECONNECT_DELAY_LONG = 60
-MAX_SILENCE = 25          # ⚡ Reinicio MUY rápido si no hay datos
+MAX_SILENCE = 25
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
@@ -119,7 +119,7 @@ def reset_day():
         if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN 100 % ESTABLE PARA v5.0.3
+# 🔌 CONEXIÓN ESTABLE (compatible con versión GitHub)
 # ====================================================
 from iqoptionapi.stable_api import IQ_Option
 
@@ -133,7 +133,7 @@ def connect():
                 time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
-            # Limpieza absoluta para eliminar sesiones fantasma
+            # Limpieza total de sesiones anteriores
             if IQ_API is not None:
                 try: IQ_API.close_connect()
                 except Exception: pass
@@ -143,10 +143,9 @@ def connect():
 
             IQ_API = IQ_Option(EMAIL, PASSWORD)
             ok, reason = IQ_API.connect()
-            time.sleep(5) # ⏱️ Tiempo extra obligatorio para Railway
+            time.sleep(5)
 
             if ok:
-                # ✅ Validación real: solo es válida si responde con datos
                 try:
                     _ = IQ_API.get_server_timestamp()
                     IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si usas cuenta real
@@ -168,12 +167,11 @@ def connect():
     return connect()
 
 def ensure_connection():
-    """Verificación PREVENTIVA: nunca llama a get_candles si no está lista"""
+    """Verificación PREVENTIVA: nunca pide datos si no está lista"""
     global IQ_API, LAST_VALID_DATA
     now = time.time()
     try:
         if IQ_API and IQ_API.check_connect() and (now - LAST_VALID_DATA < MAX_SILENCE):
-            # Ping rápido para confirmar canal vivo
             _ = IQ_API.get_server_timestamp()
             LAST_VALID_DATA = now
             return True
@@ -190,7 +188,6 @@ def get_df(iq, pair, retries=5):
     global LAST_VALID_DATA
     for _ in range(retries):
         try:
-            # ✅ PASO OBLIGATORIO: conexión lista antes de pedir
             if not ensure_connection():
                 time.sleep(ESPERA_TRAS_ERROR)
                 continue
@@ -206,7 +203,6 @@ def get_df(iq, pair, retries=5):
         except Exception as e:
             err = str(e).lower()
             logging.error(f"{pair}: {err}")
-            # ✅ Reconexión inmediata al detectar el error exacto
             if "need reconnect" in err or "websocket" in err or "timed out" in err:
                 ensure_connection()
             time.sleep(ESPERA_TRAS_ERROR)
@@ -307,7 +303,7 @@ def main():
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
                     send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
-            time.sleep(0.18) # Menos solicitudes = menos cortes
+            time.sleep(0.18)
         except Exception as e:
             send(f"💥 Error: {str(e)} — reconectando…")
             logging.exception("Error global")
