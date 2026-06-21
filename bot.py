@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN PARA RAILWAY
+# ⚙️ CONFIGURACIÓN OPTIMIZADA PARA RAILWAY
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -39,8 +39,7 @@ PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 12
 RECONNECT_DELAY = 8
 RECONNECT_DELAY_LONG = 60
-PING_INTERVAL = 12
-MAX_SILENCE = 30
+MAX_SILENCE = 25          # ⚡ Reinicio MUY rápido si no hay datos
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
@@ -49,7 +48,7 @@ VENTANA_NIVELES = 5
 TIEMPO_ESPERA_EJECUCION = 0.4
 REINTENTOS_EJECUCION = 4
 TIEMPO_MINIMO_VALIDO = 57
-ESPERA_TRAS_ERROR = 1.5
+ESPERA_TRAS_ERROR = 1.8
 
 # Variables globales
 DAILY_TRADES = 0
@@ -60,7 +59,7 @@ LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
 IQ_API = None
-LAST_DATA = 0
+LAST_VALID_DATA = 0
 
 # ====================================================
 # 📱 TELEGRAM
@@ -120,12 +119,12 @@ def reset_day():
         if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN ESTABLE (adaptada a v5.0.3)
+# 🔌 CONEXIÓN 100 % ESTABLE PARA v5.0.3
 # ====================================================
 from iqoptionapi.stable_api import IQ_Option
 
 def connect():
-    global IQ_API, LAST_DATA
+    global IQ_API, LAST_VALID_DATA
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
@@ -134,29 +133,29 @@ def connect():
                 time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
-            # Limpieza total de sesiones anteriores
+            # Limpieza absoluta para eliminar sesiones fantasma
             if IQ_API is not None:
                 try: IQ_API.close_connect()
-                except: pass
+                except Exception: pass
                 IQ_API = None
                 gc.collect()
             time.sleep(3)
 
             IQ_API = IQ_Option(EMAIL, PASSWORD)
             ok, reason = IQ_API.connect()
-            time.sleep(4) # Tiempo extra para estabilizar en nube
+            time.sleep(5) # ⏱️ Tiempo extra obligatorio para Railway
 
             if ok:
-                # Validación real: no basta con conectar, debe traer datos
+                # ✅ Validación real: solo es válida si responde con datos
                 try:
                     _ = IQ_API.get_server_timestamp()
                     IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si usas cuenta real
                     balance = IQ_API.get_balance()
-                    LAST_DATA = time.time()
+                    LAST_VALID_DATA = time.time()
                     send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                     return IQ_API
-                except Exception as val_e:
-                    logging.warning(f"Conectado sin datos: {val_e}")
+                except Exception as val_err:
+                    logging.warning(f"Conectado pero sin respuesta: {val_err}")
                     ok = False
             else:
                 logging.warning(f"Intento {attempts+1}: {reason}")
@@ -164,48 +163,51 @@ def connect():
             logging.error(f"Error conexión: {str(e)}")
         attempts += 1
         time.sleep(RECONNECT_DELAY)
-    send("💥 Demasiados fallos — pausa 60s…")
+    send("💥 Reinicio total en 60 seg…")
     time.sleep(RECONNECT_DELAY_LONG)
     return connect()
 
 def ensure_connection():
-    """Verifica que la conexión realmente funcione"""
-    global IQ_API, LAST_DATA
+    """Verificación PREVENTIVA: nunca llama a get_candles si no está lista"""
+    global IQ_API, LAST_VALID_DATA
     now = time.time()
     try:
-        if IQ_API and IQ_API.check_connect():
+        if IQ_API and IQ_API.check_connect() and (now - LAST_VALID_DATA < MAX_SILENCE):
+            # Ping rápido para confirmar canal vivo
             _ = IQ_API.get_server_timestamp()
-            LAST_DATA = now
+            LAST_VALID_DATA = now
             return True
     except Exception as e:
-        logging.warning(f"Conexión caída: {e}")
-    logging.info("🔄 Reconectando…")
+        logging.warning(f"Conexión perdida: {e}")
+    logging.info("🔄 Reconectando automáticamente…")
     IQ_API = connect()
     return IQ_API is not None
 
 # ====================================================
-# 📥 OBTENER VELAS (sin errores de reconexión)
+# 📥 OBTENER VELAS — SIN ERROR `need reconnect`
 # ====================================================
-def get_df(iq, pair, retries=4):
-    global LAST_DATA
+def get_df(iq, pair, retries=5):
+    global LAST_VALID_DATA
     for _ in range(retries):
         try:
+            # ✅ PASO OBLIGATORIO: conexión lista antes de pedir
             if not ensure_connection():
                 time.sleep(ESPERA_TRAS_ERROR)
                 continue
             data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
             if not data or len(data) < 10:
-                time.sleep(0.6)
+                time.sleep(0.7)
                 continue
             df = pd.DataFrame(data)
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
-            LAST_DATA = time.time()
+            LAST_VALID_DATA = time.time()
             return df
         except Exception as e:
             err = str(e).lower()
             logging.error(f"{pair}: {err}")
-            if "need reconnect" in err or "websocket" in err:
+            # ✅ Reconexión inmediata al detectar el error exacto
+            if "need reconnect" in err or "websocket" in err or "timed out" in err:
                 ensure_connection()
             time.sleep(ESPERA_TRAS_ERROR)
     return None
@@ -305,7 +307,7 @@ def main():
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
                     send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
-            time.sleep(0.15)
+            time.sleep(0.18) # Menos solicitudes = menos cortes
         except Exception as e:
             send(f"💥 Error: {str(e)} — reconectando…")
             logging.exception("Error global")
