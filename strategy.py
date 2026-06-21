@@ -48,3 +48,4 @@ def get_reversal_signal(df, tolerancia_nivel=0.0032, ventana_niveles=4):
         fuerza = max(0, min(fuerza, 100))
         return (senal, fuerza, tipo)
     return None
+.
