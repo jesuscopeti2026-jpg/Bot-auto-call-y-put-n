@@ -8,38 +8,42 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-# ✅ BLOQUEO ABSOLUTO DE SALIDA NO DESEADA — INTERCEPTA TAMBIÉN print()
-class BlockPrints:
+# ✅ BLOQUEO TOTAL A NIVEL DE DESCRIPTORES — INTERCEPTA INCLUSO print() CRUDO
+class BlockOutput:
     def __init__(self):
-        self._original_stdout = sys.stdout
-        self._original_stderr = sys.stderr
-    def __enter__(self):
-        sys.stdout = open(os.devnull, 'w')
-        sys.stderr = open(os.devnull, 'w')
-    def __exit__(self, *args):
-        sys.stdout.close()
-        sys.stderr.close()
-        sys.stdout = self._original_stdout
-        sys.stderr = self._original_stderr
+        self._stdout_fd = os.dup(1)
+        self._stderr_fd = os.dup(2)
+        self._null_fd = os.open(os.devnull, os.O_WRONLY)
 
-# Silenciar todos los registros de librerías
-logging.basicConfig(level=logging.WARNING)
+    def __enter__(self):
+        os.dup2(self._null_fd, 1)
+        os.dup2(self._null_fd, 2)
+
+    def __exit__(self, *args):
+        os.dup2(self._stdout_fd, 1)
+        os.dup2(self._stderr_fd, 2)
+        os.close(self._null_fd)
+        os.close(self._stdout_fd)
+        os.close(self._stderr_fd)
+
+# Silenciar todo antes de importar librerías
+logging.basicConfig(level=logging.CRITICAL)
 logging.getLogger("iqoptionapi").setLevel(logging.CRITICAL)
 logging.getLogger("websocket").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-# ✅ IMPORTAMOS TODO BLOQUEANDO CUALQUIER SALIDA
-with BlockPrints():
+# ✅ IMPORTACIÓN PROTEGIDA
+with BlockOutput():
     from strategy import get_reversal_signal
     from iqoptionapi.stable_api import IQ_Option
 
-# ✅ AHORA SÍ: ACTIVAMOS SOLO TUS MENSAJES
+# ✅ REACTIVAMOS SOLO TUS MENSAJES — FORZADO
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
     datefmt="%H:%M:%S",
     stream=sys.stdout,
-    force=True  # Sobrescribe cualquier configuración anterior
+    force=True
 )
 
 # ==========================================
@@ -65,7 +69,7 @@ MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 99999
 RECONNECT_DELAY = 1.0
-KEEPALIVE_INTERVAL = 7       # Ping MUY rápido: 7s → evita corte Railway
+KEEPALIVE_INTERVAL = 7       # Ping rápido: evita corte Railway
 MAX_SILENCE = 10             # Reinicia si 10s sin respuesta
 TIEMPO_ESPERA_EJECUCION = 0.01
 REINTENTOS_EJECUCION = 8
@@ -122,10 +126,10 @@ def listen_commands():
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ BOT ACTIVADO — conexión permanente")
+                        send("✅ BOT ACTIVADO — conexión blindada")
                         logging.info("✅ BOT INICIADO | CONEXIÓN PERMANENTE")
                     else:
-                        send("ℹ️ Ya activo")
+                        send("ℹ️ Ya está analizando")
                 elif text == "/stop":
                     BOT_RUNNING = False
                     send("🛑 Detenido")
@@ -134,7 +138,19 @@ def listen_commands():
             time.sleep(0.5)
 
 # ====================================================
-# 🔌 CONEXIÓN + MANTENIMIENTO
+# 🔄 REINICIO DIARIO
+# ====================================================
+def reset_day():
+    global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PENDIENTE
+    hoy = datetime.now(timezone.utc).day
+    if hoy != CURRENT_DAY:
+        DAILY_TRADES = LOSS_STREAK = 0
+        LAST_TRADE = SEÑAL_PENDIENTE = None
+        CURRENT_DAY = hoy
+        logging.info("🔄 Nuevo ciclo — todo listo")
+
+# ====================================================
+# 🔌 CONEXIÓN PERMANENTE
 # ====================================================
 def connect():
     global LAST_PING, ULTIMA_RESPUESTA
@@ -145,8 +161,8 @@ def connect():
                 send("❌ Faltan credenciales IQ")
                 time.sleep(5)
                 continue
-            # Bloqueamos cualquier mensaje durante la conexión
-            with BlockPrints():
+            # Bloqueo absoluto al conectar
+            with BlockOutput():
                 iq = IQ_Option(EMAIL, PASSWORD)
                 ok, _ = iq.connect()
                 time.sleep(0.5)
@@ -174,7 +190,7 @@ def keep_alive_check(iq):
     try:
         if iq and iq.check_connect():
             if ahora - LAST_PING > KEEPALIVE_INTERVAL:
-                with BlockPrints():
+                with BlockOutput():
                     _ = iq.get_server_timestamp()
                 LAST_PING = ahora
                 ULTIMA_RESPUESTA = ahora
@@ -187,7 +203,7 @@ def keep_alive_check(iq):
     return connect()
 
 # ====================================================
-# 📥 VELAS — 100 % SIN RUIDO
+# 📥 VELAS — SIN RUIDO NINGUNO
 # ====================================================
 def get_df(iq, pair, retries=4):
     for _ in range(retries):
@@ -195,8 +211,8 @@ def get_df(iq, pair, retries=4):
             iq = keep_alive_check(iq)
             if not iq: continue
             logging.info(f"🔍 Analizando par: {pair}")
-            # ✅ AQUÍ ESTÁ EL SECRETO: bloqueamos la llamada que genera el error
-            with BlockPrints():
+            # ✅ BLOQUEO EN LA LLAMADA QUE GENERA EL ERROR
+            with BlockOutput():
                 data = iq.get_candles(pair, TIMEFRAME_M1, 22, time.time())
             if not data or len(data) < 8:
                 continue
@@ -222,7 +238,7 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
             if sec_rest < TIEMPO_MINIMO_VALIDO:
                 return False, None
             time.sleep(TIEMPO_ESPERA_EJECUCION)
-            with BlockPrints():
+            with BlockOutput():
                 ok, tid = iq.buy(monto, par, direccion, vencimiento)
             if ok and tid > 0:
                 logging.info(f"✅ Operación ejecutada: {par} | {direccion.upper()}")
@@ -286,7 +302,7 @@ def main():
                         send(f"✅ Abierta — Total: {DAILY_TRADES}")
                         time.sleep(62)
                         try:
-                            with BlockPrints():
+                            with BlockOutput():
                                 res = iq.check_win_v4(tid)
                             if res < 0:
                                 LOSS_STREAK += 1
@@ -322,15 +338,6 @@ def main():
             logging.info("ℹ️ Recuperación automática")
             time.sleep(0.8)
             iq = keep_alive_check(iq)
-
-def reset_day():
-    global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PENDIENTE
-    hoy = datetime.now(timezone.utc).day
-    if hoy != CURRENT_DAY:
-        DAILY_TRADES = LOSS_STREAK = 0
-        LAST_TRADE = SEÑAL_PENDIENTE = None
-        CURRENT_DAY = hoy
-        logging.info("🔄 Nuevo día — contadores reiniciados")
 
 if __name__ == "__main__":
     req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
