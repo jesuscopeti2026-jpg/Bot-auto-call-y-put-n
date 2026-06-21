@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN ANTI‑CORTE RAILWAY
+# ⚙️ CONFIGURACIÓN PARA RAILWAY
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -39,7 +39,7 @@ MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_DELAY = 3
-MAX_SILENCE = 20       # <22s: antes de corte Railway
+KEEPALIVE_INTERVAL = 18  # Ping antes del corte de Railway
 
 FUERZA_MINIMA = 32
 TOLERANCIA_NIVEL = 0.0028
@@ -49,7 +49,7 @@ TIEMPO_ESPERA_EJECUCION = 0.02
 REINTENTOS_EJECUCION = 4
 TIEMPO_MINIMO_VALIDO = 58
 
-# Variables de control
+# Variables
 DAILY_TRADES = 0
 CURRENT_DAY = datetime.now(timezone.utc).day
 LOSS_STREAK = 0
@@ -57,7 +57,7 @@ LAST_LOSS = 0
 LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
-LAST_ACTIVITY = 0       # Controla vida del canal
+LAST_PING = 0
 
 # ====================================================
 # 📱 TELEGRAM
@@ -70,8 +70,8 @@ def send(msg):
                 data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
                 timeout=8
             )
-        except Exception as e:
-            logging.error(f"Telegram: {str(e)}")
+        except Exception:
+            pass
 
 def listen_commands():
     global BOT_RUNNING
@@ -89,39 +89,25 @@ def listen_commands():
                 continue
             for update in data.get("result", []):
                 last_update_id = update["update_id"]
-                msg = update.get("message", {})
-                text = msg.get("text", "").strip().lower()
-                chat_id = str(msg.get("chat", {}).get("id", ""))
+                text = update.get("message", {}).get("text", "").strip().lower()
+                chat_id = str(update["message"]["chat"]["id"])
                 if chat_id != str(CHAT_ID): continue
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
-                        send("✅ <b>BOT INICIADO</b>\nEjecución: vela siguiente | Anti‑corte Railway")
+                        send("✅ BOT INICIADO — vela siguiente")
                     else: send("ℹ️ Ya activo")
                 elif text == "/stop":
                     BOT_RUNNING = False
                     send("🛑 Detenido")
-        except Exception as e:
-            logging.error(f"Comandos: {str(e)}")
+        except Exception:
             time.sleep(1)
 
 # ====================================================
-# 🔄 REINICIO DIARIO
-# ====================================================
-def reset_day():
-    global DAILY_TRADES, CURRENT_DAY, LOSS_STREAK, LAST_TRADE, SEÑAL_PENDIENTE
-    today = datetime.now(timezone.utc).day
-    if today != CURRENT_DAY:
-        DAILY_TRADES = LOSS_STREAK = 0
-        LAST_TRADE = SEÑAL_PENDIENTE = None
-        CURRENT_DAY = today
-        if BOT_RUNNING: send("🔄 Nuevo día — contadores limpios")
-
-# ====================================================
-# 🔌 CONEXIÓN + MANTENIMIENTO INTELIGENTE
+# 🔌 CONEXIÓN + MANTENIMIENTO
 # ====================================================
 def connect():
-    global LAST_ACTIVITY
+    global LAST_PING
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
@@ -137,85 +123,77 @@ def connect():
                     _ = iq.get_server_timestamp()
                     iq.change_balance("PRACTICE")
                     balance = iq.get_balance()
-                    LAST_ACTIVITY = time.time()
-                    send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
+                    LAST_PING = time.time()
+                    send(f"✅ CONECTADO | ${balance:.2f}")
                     return iq
                 except Exception:
                     ok = False
-            logging.warning(f"Intento {attempts+1}: {reason}")
-        except Exception as e:
-            logging.error(f"Conexión: {str(e)}")
-        attempts += 1
-        time.sleep(RECONNECT_DELAY)
-    send("💥 Pausa larga 60s…")
+            attempts += 1
+            time.sleep(RECONNECT_DELAY)
+        except Exception:
+            attempts += 1
+            time.sleep(RECONNECT_DELAY)
+    send("💥 Reintentando en 60s…")
     time.sleep(60)
     return connect()
 
-def keep_alive(iq):
-    """Ping solo cuando hace falta — evita corte por inactividad"""
-    global LAST_ACTIVITY
+def check_and_reconnect(iq):
+    global LAST_PING
     ahora = time.time()
     try:
         if iq and iq.check_connect():
-            if ahora - LAST_ACTIVITY > 18:  # Ping antes de 20s
+            if ahora - LAST_PING > KEEPALIVE_INTERVAL:
                 iq.get_server_timestamp()
-                LAST_ACTIVITY = ahora
+                LAST_PING = ahora
             return iq
     except Exception:
         pass
     return connect()
 
 # ====================================================
-# 📥 OBTENER VELAS — CLAVE: FLUJO LENTO Y SEGURO
+# 📥 OBTENER VELAS — IGNORA ERROR, SIGUE TRABAJANDO
 # ====================================================
 def get_df(iq, pair, retries=2):
-    global LAST_ACTIVITY
     for _ in range(retries):
         try:
-            iq = keep_alive(iq)
+            iq = check_and_reconnect(iq)
             if not iq:
-                time.sleep(0.4)
+                time.sleep(0.3)
                 continue
             data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
             if not data or len(data) < 10:
-                time.sleep(0.4)
+                time.sleep(0.3)
                 continue
             df = pd.DataFrame(data)
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
             df[["open","close","high","low","volume"]] = df[["open","close","high","low","volume"]].astype(float)
-            LAST_ACTIVITY = time.time()
             return df
         except Exception as e:
-            err = str(e).lower()
-            if "need reconnect" in err or "websocket" in err:
+            if "need reconnect" in str(e).lower():
                 iq = connect()
-            logging.error(f"{pair}: {str(e)}")
-            time.sleep(0.5)
+            time.sleep(0.4)
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN PRECISA
+# 🚀 EJECUCIÓN
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
-    global LAST_ACTIVITY
     for intento in range(REINTENTOS_EJECUCION + 1):
         try:
-            iq = keep_alive(iq)
+            iq = check_and_reconnect(iq)
             if not iq: continue
-            tiempo_servidor = iq.get_server_timestamp()
-            segundos_restantes = 60 - (tiempo_servidor % 60)
-            if segundos_restantes < TIEMPO_MINIMO_VALIDO:
+            ts = iq.get_server_timestamp()
+            sec_rest = 60 - (ts % 60)
+            if sec_rest < TIEMPO_MINIMO_VALIDO:
                 return False, None
             time.sleep(TIEMPO_ESPERA_EJECUCION)
-            status, trade_id = iq.buy(monto, par, direccion, vencimiento)
-            LAST_ACTIVITY = time.time()
-            if status and trade_id > 0:
-                return True, trade_id
+            ok, tid = iq.buy(monto, par, direccion, vencimiento)
+            if ok and tid > 0:
+                return True, tid
             if intento < REINTENTOS_EJECUCION:
                 time.sleep(0.2)
-        except Exception as e:
-            if intento < REINTENTOS_EJECUCION:
-                time.sleep(0.2)
+        except Exception:
+            iq = check_and_reconnect(iq)
     return False, None
 
 # ====================================================
@@ -224,113 +202,91 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
     threading.Thread(target=listen_commands, daemon=True).start()
-
     iq = connect()
     last_candle = None
-    send("ℹ️ <b>SISTEMA LISTO</b>\nEjecución: vela siguiente | /start para operar")
+    send("ℹ️ SISTEMA LISTO — usa /start")
 
     while True:
         try:
             if not BOT_RUNNING:
                 time.sleep(0.5)
                 continue
-
             reset_day()
-            iq = keep_alive(iq)
+            iq = check_and_reconnect(iq)
             if not iq:
                 time.sleep(1)
                 continue
 
             if DAILY_TRADES >= MAX_DAILY_TRADES:
-                send("ℹ️ Límite diario alcanzado.")
+                send("ℹ️ Límite diario alcanzado")
                 BOT_RUNNING = False
                 time.sleep(300)
                 continue
-
             if LOSS_STREAK >= MAX_LOSS_STREAK:
-                restante = int(PAUSE_TIME - (time.time() - LAST_LOSS))
-                if restante > 0:
-                    send(f"⏸️ Pausa: {restante//60} min")
+                rest = int(PAUSE_TIME - (time.time() - LAST_LOSS))
+                if rest > 0:
+                    send(f"⏸️ Pausa {rest//60}min")
                     time.sleep(5)
                     continue
-                else:
-                    LOSS_STREAK = 0
-                    LAST_TRADE = None
-                    send("✅ Pausa finalizada.")
+                LOSS_STREAK = 0
 
-            server_time = iq.get_server_timestamp()
-            sec = server_time % 60
-            current_candle = int(server_time // 60)
+            st = iq.get_server_timestamp()
+            sec = st % 60
+            current_candle = int(st // 60)
 
-            # Ejecutar señal
             if current_candle != last_candle:
                 last_candle = current_candle
                 if SEÑAL_PENDIENTE:
-                    pair, signal, fuerza, tipo_nivel = SEÑAL_PENDIENTE
+                    p, sig, fz, tn = SEÑAL_PENDIENTE
                     SEÑAL_PENDIENTE = None
-                    if (pair, signal) == LAST_TRADE: continue
-                    LAST_TRADE = (pair, signal)
-
-                    send(f"""🚀 <b>EJECUTANDO ENTRADA</b>
-💹 Activo: {pair}
-📍 Zona: {tipo_nivel}
-💪 Fuerza: {fuerza}/100
-📊 Tipo: {'🟢 COMPRA' if signal == 'call' else '🔴 VENTA'}""")
-
-                    status, trade_id = ejecutar_operacion(iq, BASE_AMOUNT, pair, signal, EXPIRATION)
-                    if status:
+                    if (p, sig) == LAST_TRADE: continue
+                    LAST_TRADE = (p, sig)
+                    send(f"""🚀 {p} | {tn} | {fz}
+{'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
+                    ok, tid = ejecutar_operacion(iq, BASE_AMOUNT, p, sig, EXPIRATION)
+                    if ok:
                         DAILY_TRADES += 1
-                        send(f"✅ <b>OPERACIÓN ABIERTA</b> | ${BASE_AMOUNT:.2f}")
+                        send(f"✅ Abierta — Total: {DAILY_TRADES}")
                         time.sleep(65)
                         try:
-                            res = iq.check_win_v4(trade_id)
-                            LAST_ACTIVITY = time.time()
+                            res = iq.check_win_v4(tid)
                             if res < 0:
                                 LOSS_STREAK += 1
                                 LAST_LOSS = time.time()
-                                send(f"❌ -${abs(res):.2f} | Racha: {LOSS_STREAK}")
+                                send(f"❌ -${abs(res):.2f}")
                             else:
                                 LOSS_STREAK = 0
                                 send(f"✅ +${res:.2f}")
-                        except Exception as e:
-                            send(f"⚠️ Verificación: {str(e)}")
-                            iq = keep_alive(iq)
-                    else:
-                        send(f"❌ No se pudo ejecutar en {pair}")
+                        except Exception:
+                            pass
 
-            # Buscar señales con pausas para no saturar
             if 10 <= sec <= 58:
-                mejor_opcion = None
-                mayor_fuerza = 0
-                for pair in PAIRS:
-                    df = get_df(iq, pair)
+                mejor = None
+                max_fz = 0
+                for par in PAIRS:
+                    df = get_df(iq, par)
                     if df is None:
-                        time.sleep(0.25)  # ← clave: reduce tráfico
+                        time.sleep(0.2)
                         continue
-                    resultado = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
-                    if resultado:
-                        signal, fuerza, tipo_nivel = resultado
-                        if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
-                            mayor_fuerza = fuerza
-                            mejor_opcion = (pair, signal, fuerza, tipo_nivel)
-                if 55 <= sec <= 58 and mejor_opcion:
-                    SEÑAL_PENDIENTE = mejor_opcion
-                    pair, signal, fuerza, tipo_nivel = mejor_opcion
-                    send(f"""🔍 <b>SEÑAL DETECTADA</b>
-💹 {pair} | {tipo_nivel} | Fuerza: {fuerza}
-⏳ Ejecución: vela siguiente""")
+                    res = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
+                    if res:
+                        sig, fz, tn = res
+                        if fz >= FUERZA_MINIMA and fz > max_fz:
+                            max_fz = fz
+                            mejor = (par, sig, fz, tn)
+                if 55 <= sec <= 58 and mejor:
+                    SEÑAL_PENDIENTE = mejor
+                    p, sig, fz, tn = mejor
+                    send(f"🔍 Señal {p} {tn} | {fz}")
 
-            time.sleep(0.05)  # ← ciclo más lento = menos cortes
+            time.sleep(0.05)
 
-        except Exception as e:
-            send(f"💥 Error: {str(e)} | Recuperando…")
+        except Exception:
             time.sleep(2)
-            iq = keep_alive(iq)
+            iq = check_and_reconnect(iq)
 
 if __name__ == "__main__":
-    required = ["IQ_EMAIL", "IQ_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"]
-    missing = [v for v in required if not os.getenv(v)]
-    if missing:
-        print(f"❌ Faltan variables: {', '.join(missing)}")
-        sys.exit(1)
+    req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
+    faltan = [v for v in req if not os.getenv(v)]
+    if faltan: print(f"❌ Faltan: {faltan}"); sys.exit(1)
     main()
