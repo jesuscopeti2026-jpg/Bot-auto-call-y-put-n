@@ -7,9 +7,9 @@ import sys
 import threading
 import logging
 from datetime import datetime, timezone
-
 from iqoptionapi.stable_api import IQ_Option
 
+# Configuración de registros
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -38,7 +38,7 @@ PAIRS = [
 MAX_DAILY_TRADES = 100
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
-MAX_RECONNECT_ATTEMPTS = 15   # Más intentos para Railway
+MAX_RECONNECT_ATTEMPTS = 15
 RECONNECT_DELAY = 3
 RECONNECT_DELAY_LONG = 15
 
@@ -51,7 +51,7 @@ REINTENTOS_EJECUCION = 4
 TIEMPO_MINIMO_VALIDO = 58
 ESPERA_TRAS_ERROR = 0.5
 
-# Variables globales de conexión
+# Variables globales
 DAILY_TRADES = 0
 CURRENT_DAY = datetime.now(timezone.utc).day
 LOSS_STREAK = 0
@@ -119,7 +119,7 @@ def reset_day():
         if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN 100 % FIABLE (clave contra el error)
+# 🔌 CONEXIÓN 100 % FIABLE
 # ====================================================
 def connect():
     global IQ_API
@@ -134,11 +134,11 @@ def connect():
             # Cierra sesión anterior antes de crear nueva
             if IQ_API and hasattr(IQ_API, "close_connect"):
                 try: IQ_API.close_connect()
-                except: pass
+                except Exception as ce: logging.warning(f"Cierre conexión: {ce}")
             IQ_API = IQ_Option(EMAIL, PASSWORD)
             ok, reason = IQ_API.connect()
             if ok:
-                IQ_API.change_balance("PRACTICE") # Cambia a REAL si quieres
+                IQ_API.change_balance("PRACTICE") # Cambia a "REAL" si usas cuenta real
                 balance = IQ_API.get_balance()
                 send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
                 return IQ_API
@@ -153,7 +153,7 @@ def connect():
     return connect()
 
 def ensure_connection():
-    """Verificación obligatoria antes de cada operación/dato"""
+    """Verificación obligatoria antes de cada acción: elimina `need reconnect`"""
     global IQ_API
     try:
         if IQ_API and IQ_API.check_connect():
@@ -210,13 +210,15 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL
+# 🧠 BUCLE PRINCIPAL — PROTECCIÓN VARIABLES
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE, IQ_API
     threading.Thread(target=listen_commands, daemon=True).start()
     IQ_API = connect()
     send("ℹ️ Sistema listo — usa /start para operar")
+    last_candle = None
+
     while True:
         try:
             if not BOT_RUNNING: time.sleep(1); continue
@@ -235,8 +237,8 @@ def main():
             current_candle = int(st // 60)
 
             # Ejecutar señal al inicio de vela
-            if current_candle != (last_candle := locals().get("last_candle")):
-                locals()["last_candle"] = current_candle
+            if current_candle != last_candle:
+                last_candle = current_candle
                 if SEÑAL_PENDIENTE:
                     p, sig, fz, tn = SEÑAL_PENDIENTE
                     SEÑAL_PENDIENTE = None
@@ -263,7 +265,7 @@ def main():
                             ensure_connection()
                     else: send(f"❌ Falló en {p}")
 
-            # Buscar señales
+            # Buscar señales — ✅ PROTECCIÓN CONTRA FALTA DE VALOR
             if 10 <= sec <= 57:
                 mejor = None; max_fz = 0
                 for par in PAIRS:
@@ -271,16 +273,18 @@ def main():
                     if df is None: continue
                     try:
                         from strategy import get_reversal_signal
-                        res = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
-                        if res: sig, fz, tn = res
-                        if fz >= FUERZA_MINIMA and fz>max_fz:
-                            max_fz=fz; mejor=(par, sig, fz, tn)
+                        resultado = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
+                        # Solo procesa si recibe la tupla COMPLETA
+                        if resultado is not None and isinstance(resultado, tuple) and len(resultado) == 3:
+                            sig, fz, tn = resultado
+                            if isinstance(fz, (int,float)) and fz >= FUERZA_MINIMA and fz>max_fz:
+                                max_fz=fz; mejor=(par, sig, fz, tn)
                     except Exception as e:
                         logging.error(f"Estrategia {par}: {e}")
                 if 55 <= sec <= 57 and mejor:
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
-                    send(f"🔍 Señal {par} {tn} {fz} — entra siguiente vela")
+                    send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
             time.sleep(0.05)
         except Exception as e:
             send(f"💥 Error: {str(e)} — reconectando…")
@@ -291,6 +295,6 @@ def main():
 if __name__ == "__main__":
     req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
     faltan = [v for v in req if not os.getenv(v)]
-    if faltan: print(f"❌ Faltan vars: {faltan}"); sys.exit(1)
-    if not os.path.exists("strategy.py"): print("❌ Falta strategy.py"); sys.exit(1)
+    if faltan: print(f"❌ Faltan variables: {faltan}"); sys.exit(1)
+    if not os.path.exists("strategy.py"): print("❌ Falta el archivo strategy.py"); sys.exit(1)
     main()
