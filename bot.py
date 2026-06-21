@@ -8,7 +8,7 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-# ✅ BLOQUEO TOTAL A NIVEL DE DESCRIPTORES — SIN RASTRO DE ERRORES
+# ✅ BLOQUEO TOTAL DE SALIDA NO DESEADA
 class BlockOutput:
     def __init__(self):
         self._stdout_fd = os.dup(1)
@@ -26,18 +26,18 @@ class BlockOutput:
         os.close(self._stdout_fd)
         os.close(self._stderr_fd)
 
-# Silenciar todo antes de importar librerías
+# Silenciar librerías externas
 logging.basicConfig(level=logging.CRITICAL)
 logging.getLogger("iqoptionapi").setLevel(logging.CRITICAL)
 logging.getLogger("websocket").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-# ✅ IMPORTACIÓN PROTEGIDA
+# Importación protegida
 with BlockOutput():
     from strategy import get_reversal_signal
     from iqoptionapi.stable_api import IQ_Option
 
-# ✅ REACTIVAMOS SOLO TUS MENSAJES
+# Activar solo tus mensajes
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
@@ -72,20 +72,20 @@ RECONNECT_DELAY = 1.0
 KEEPALIVE_INTERVAL = 7
 MAX_SILENCE = 10
 REINTENTOS_EJECUCION = 8
-TIEMPO_EJECUCION_SEG = 1.5  # ✅ Entra entre segundo 1 y 2 justo al abrir
+TIEMPO_EJECUCION_SEG = 1.5
 
 FUERZA_MINIMA = 28
 TOLERANCIA_NIVEL = 0.0032
 VENTANA_NIVELES = 4
 
-# Variables
+# Variables globales
 DAILY_TRADES = 0
 CURRENT_DAY = datetime.now(timezone.utc).day
 LOSS_STREAK = 0
 LAST_LOSS = 0
 LAST_TRADE = None
 BOT_RUNNING = False
-SEÑAL_PARA_EJECUTAR = None  # ✅ Guarda señal hasta cambio de vela
+SEÑAL_PARA_EJECUTAR = None
 LAST_PING = 0
 ULTIMA_RESPUESTA = time.time()
 
@@ -201,7 +201,7 @@ def keep_alive_check(iq):
     return connect()
 
 # ====================================================
-# 📥 VELAS — SIN RUIDO
+# 📥 OBTENER VELAS
 # ====================================================
 def get_df(iq, pair, retries=4):
     for _ in range(retries):
@@ -223,7 +223,7 @@ def get_df(iq, pair, retries=4):
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN — JUSTO AL ABRIR VELA
+# 🚀 EJECUCIÓN JUSTO AL ABRIR VELA
 # ====================================================
 def ejecutar_operacion_al_abrir(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION + 1):
@@ -232,7 +232,6 @@ def ejecutar_operacion_al_abrir(iq, monto, par, direccion, vencimiento):
             if not iq: continue
             ts = iq.get_server_timestamp()
             sec = ts % 60
-            # ✅ Ejecuta estrictamente entre segundo 1 y 2
             if 1 <= sec <= 2:
                 time.sleep(TIEMPO_EJECUCION_SEG - 1)
                 with BlockOutput():
@@ -247,7 +246,7 @@ def ejecutar_operacion_al_abrir(iq, monto, par, direccion, vencimiento):
     return False, None
 
 # ====================================================
-# 🧠 BUCLE PRINCIPAL — LÓGICA NUEVA
+# 🧠 BUCLE PRINCIPAL
 # ====================================================
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PARA_EJECUTAR
@@ -280,12 +279,11 @@ def main():
                     continue
                 LOSS_STREAK = 0
 
-            # Tiempo servidor
             ts = iq.get_server_timestamp()
             segundo_actual = ts % 60
             vela_actual = int(ts // 60)
 
-            # ✅ DETECTA CAMBIO DE VELA → EJECUTA EN SEG 1‑2
+            # Ejecutar al abrir nueva vela
             if vela_actual != vela_anterior:
                 vela_anterior = vela_actual
                 if SEÑAL_PARA_EJECUTAR:
@@ -314,7 +312,7 @@ def main():
                         except Exception:
                             pass
 
-            # ✅ ANALIZA CONDICIONES DURANTE TODA LA VELA (desde seg 3 hasta seg 59)
+            # Analizar toda la vela (segundos 3‑59)
             if 3 <= segundo_actual <= 59:
                 mejor = None
                 max_fz = 0
