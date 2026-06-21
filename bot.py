@@ -8,7 +8,6 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-from strategy import get_reversal_signal
 from iqoptionapi.stable_api import IQ_Option
 
 logging.basicConfig(
@@ -41,16 +40,18 @@ MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
 MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_DELAY = 3
+RECONNECT_DELAY_LONG = 10
 
 # ✅ PARÁMETROS AJUSTADOS PARA MÁS ENTRADAS
-FUERZA_MINIMA = 35          # Bajamos de 40 a 35 para aceptar señales con menor confirmación
-TOLERANCIA_NIVEL = 0.0018   # Aumentamos para detectar zonas más amplias
-VENTANA_NIVELES = 5         # Reducimos para encontrar más soportes/resistencias
+FUERZA_MINIMA = 35
+TOLERANCIA_NIVEL = 0.0018
+VENTANA_NIVELES = 5
 
 # ⏱️ TIEMPOS SEGUROS PARA IQ OPTION
 TIEMPO_ESPERA_EJECUCION = 0.1
 REINTENTOS_EJECUCION = 3
 TIEMPO_MINIMO_VALIDO = 59
+ESPERA_TRAS_ERROR = 1
 
 # Variables globales
 DAILY_TRADES = 0
@@ -60,6 +61,7 @@ LAST_LOSS = 0
 LAST_TRADE = None
 BOT_RUNNING = False
 SEÑAL_PENDIENTE = None
+IQ_API = None
 
 # ====================================================
 # 📱 FUNCIONES TELEGRAM
@@ -70,7 +72,7 @@ def send(msg):
             requests.post(
                 f"https://api.telegram.org/bot{TOKEN}/sendMessage",
                 data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-                timeout=8
+                timeout=10
             )
         except Exception as e:
             logging.error(f"Telegram: {str(e)}")
@@ -132,58 +134,80 @@ def reset_day():
             send("🔄 <b>NUEVO DÍA</b> | Contadores reiniciados.")
 
 # ====================================================
-# 🔌 CONEXIÓN IQ OPTION
+# 🔌 CONEXIÓN IQ OPTION - SOLUCIÓN ERROR RECONNECT
 # ====================================================
 def connect():
+    global IQ_API
     attempts = 0
     while attempts < MAX_RECONNECT_ATTEMPTS:
         try:
             if not EMAIL or not PASSWORD:
-                send("❌ ERROR: Credenciales no configuradas.")
-                time.sleep(10)
+                send("❌ ERROR: Credenciales IQ no configuradas.")
+                time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
 
-            iq = IQ_Option(EMAIL, PASSWORD)
-            ok, reason = iq.connect()
+            # Cerrar conexión anterior si existe
+            if IQ_API and hasattr(IQ_API, 'close_connect'):
+                try:
+                    IQ_API.close_connect()
+                except:
+                    pass
+
+            IQ_API = IQ_Option(EMAIL, PASSWORD)
+            ok, reason = IQ_API.connect()
             
             if ok:
                 try:
-                    iq.change_balance("PRACTICE")  # Cambia a "REAL" cuando estés listo
-                    balance = iq.get_balance()
-                    send(f"✅ <b>CONECTADO</b>\nSaldo: ${balance:.2f}")
-                    return iq
+                    IQ_API.change_balance("PRACTICE")  # Cambia a "REAL" cuando estés listo
+                    balance = IQ_API.get_balance()
+                    send(f"✅ <b>CONECTADO CORRECTAMENTE</b>\nSaldo: ${balance:.2f}")
+                    return IQ_API
                 except Exception as e:
-                    send(f"⚠️ Cargando datos del mercado...")
-                    time.sleep(1)
+                    logging.warning(f"Esperando sincronización: {str(e)}")
+                    time.sleep(2)
             else:
+                logging.error(f"Fallo conexión: {reason}")
                 send(f"❌ Conexión fallida: {reason}")
                 
         except Exception as e:
+            logging.error(f"Error conexión: {str(e)}")
             send(f"❌ Error conexión: {str(e)}")
         
         attempts += 1
         time.sleep(RECONNECT_DELAY)
     
-    send("💥 Reintentando conexión en 60 segundos...")
-    time.sleep(60)
+    send("💥 Reintentando conexión completa en 30 segundos...")
+    time.sleep(30)
     return connect()
 
+# ✅ FUNCIÓN AUXILIAR: VERIFICAR Y RECONECTAR ANTES DE CUALQUIER ACCIÓN
+def ensure_connection():
+    global IQ_API
+    try:
+        if IQ_API and IQ_API.check_connect():
+            return True
+    except:
+        pass
+    logging.warning("Conexión perdida → reconectando...")
+    IQ_API = connect()
+    return IQ_API is not None
+
 # ====================================================
-# 📥 OBTENER DATOS DE MERCADO
+# 📥 OBTENER DATOS DE MERCADO - CORREGIDO
 # ====================================================
-def get_df(iq, pair, retries=2):
+def get_df(iq, pair, retries=3):
+    """Soluciona 'need reconnect' comprobando conexión antes de pedir velas"""
     for _ in range(retries):
         try:
-            if not iq or not iq.check_connect():
-                iq = connect()
-                if not iq:
-                    time.sleep(1)
-                    continue
+            # Verificar conexión obligatoria antes de solicitar datos
+            if not ensure_connection():
+                time.sleep(ESPERA_TRAS_ERROR)
+                continue
 
             data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
             if not data or len(data) < 10:
-                time.sleep(0.2)
+                time.sleep(0.3)
                 continue
 
             df = pd.DataFrame(data)
@@ -193,7 +217,10 @@ def get_df(iq, pair, retries=2):
 
         except Exception as e:
             logging.error(f"Datos {pair}: {str(e)}")
-            time.sleep(0.3)
+            # Forzar reconexión en caso de error de lectura
+            if "reconnect" in str(e).lower() or "connection" in str(e).lower():
+                ensure_connection()
+            time.sleep(ESPERA_TRAS_ERROR)
     
     return None
 
@@ -204,9 +231,9 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     """Ejecuta solo si queda tiempo suficiente y el mercado está disponible"""
     for intento in range(REINTENTOS_EJECUCION + 1):
         try:
-            if not iq.check_connect():
-                iq = connect()
-                time.sleep(0.2)
+            if not ensure_connection():
+                time.sleep(0.3)
+                continue
             
             tiempo_servidor = iq.get_server_timestamp()
             segundos_restantes = 60 - (tiempo_servidor % 60)
@@ -222,11 +249,13 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
                 return True, trade_id
             
             if intento < REINTENTOS_EJECUCION:
-                time.sleep(0.2)
+                time.sleep(0.3)
 
         except Exception as e:
+            logging.error(f"Ejecución: {str(e)}")
             if intento < REINTENTOS_EJECUCION:
-                time.sleep(0.2)
+                ensure_connection()
+                time.sleep(0.3)
     
     return False, None
 
@@ -234,10 +263,10 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
 # 🧠 BUCLE PRINCIPAL DE OPERACIÓN
 # ====================================================
 def main():
-    global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE
+    global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE, IQ_API
     threading.Thread(target=listen_commands, daemon=True).start()
 
-    iq = connect()
+    IQ_API = connect()
     last_candle = None
     send("ℹ️ <b>SISTEMA LISTO</b>\nEstrategia: Reversión en Soporte/Resistencia\nAnalizando " + str(len(PAIRS)) + " pares\nEnvía /start para comenzar")
 
@@ -249,9 +278,8 @@ def main():
 
             reset_day()
 
-            if not iq or not iq.check_connect():
-                iq = connect()
-                time.sleep(1)
+            if not ensure_connection():
+                time.sleep(2)
                 continue
 
             if DAILY_TRADES >= MAX_DAILY_TRADES:
@@ -271,7 +299,7 @@ def main():
                     LAST_TRADE = None
                     send("✅ Pausa finalizada. Volviendo a operar.")
 
-            server_time = iq.get_server_timestamp()
+            server_time = IQ_API.get_server_timestamp()
             sec = server_time % 60
             current_candle = int(server_time // 60)
 
@@ -296,7 +324,7 @@ def main():
 📊 Tipo: {'🟢 COMPRA' if signal == 'call' else '🔴 VENTA'}
 ⏱️ Vencimiento: 1 minuto""")
 
-                    status, trade_id = ejecutar_operacion(iq, BASE_AMOUNT, pair, signal, EXPIRATION)
+                    status, trade_id = ejecutar_operacion(IQ_API, BASE_AMOUNT, pair, signal, EXPIRATION)
 
                     if status:
                         DAILY_TRADES += 1
@@ -304,7 +332,7 @@ def main():
 
                         time.sleep(65)
                         try:
-                            res = iq.check_win_v4(trade_id)
+                            res = IQ_API.check_win_v4(trade_id)
                             if res is None:
                                 send("⚠️ Resultado no pudo ser verificado.")
                                 continue
@@ -318,7 +346,9 @@ def main():
                                 send(f"✅ <b>OPERACIÓN GANADA</b> | +${res:.2f}\n_________________________")
 
                         except Exception as e:
+                            logging.error(f"Verificación: {str(e)}")
                             send(f"⚠️ Error al verificar resultado: {str(e)}")
+                            ensure_connection()
                     else:
                         send(f"❌ No se pudo ejecutar la operación en {pair}")
 
@@ -330,16 +360,21 @@ def main():
                 mayor_fuerza = 0
 
                 for pair in PAIRS:
-                    df = get_df(iq, pair)
+                    df = get_df(IQ_API, pair)
                     if df is None:
                         continue
 
-                    resultado = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
-                    if resultado is not None:
-                        signal, fuerza, tipo_nivel = resultado
-                        if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
-                            mayor_fuerza = fuerza
-                            mejor_opcion = (pair, signal, fuerza, tipo_nivel)
+                    try:
+                        from strategy import get_reversal_signal
+                        resultado = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
+                        if resultado is not None:
+                            signal, fuerza, tipo_nivel = resultado
+                            if fuerza >= FUERZA_MINIMA and fuerza > mayor_fuerza:
+                                mayor_fuerza = fuerza
+                                mejor_opcion = (pair, signal, fuerza, tipo_nivel)
+                    except Exception as e:
+                        logging.error(f"Estrategia {pair}: {str(e)}")
+                        continue
 
                 if 55 <= sec <= 57 and mejor_opcion is not None:
                     SEÑAL_PENDIENTE = mejor_opcion
@@ -350,21 +385,25 @@ def main():
 💪 Fuerza: {fuerza}/100
 ⏳ Entrada: inicio de la siguiente vela""")
 
-            time.sleep(0.02)
+            time.sleep(0.05)
 
         except Exception as e:
-            send(f"💥 Error en el sistema: {str(e)} | Reiniciando...")
+            send(f"💥 Error en el sistema: {str(e)} | Reconectando...")
             logging.exception("Error en bucle principal")
             time.sleep(2)
-            try:
-                iq = connect()
-            except:
-                pass
+            ensure_connection()
 
 if __name__ == "__main__":
+    # Verificación de variables obligatorias
     required = ["IQ_EMAIL", "IQ_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"]
     missing = [v for v in required if not os.getenv(v)]
     if missing:
         print(f"❌ Faltan variables de entorno: {', '.join(missing)}")
         sys.exit(1)
+
+    # Verificar existencia del archivo de estrategia
+    if not os.path.exists("strategy.py"):
+        print("❌ Falta el archivo strategy.py en la misma carpeta")
+        sys.exit(1)
+
     main()
