@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN PARA RAILWAY — RECONEXIÓN ANTICIPADA
+# ⚙️ CONFIGURACIÓN — CONEXIÓN DIRECTA
 # ==========================================
 EMAIL = os.getenv("IQ_EMAIL")
 PASSWORD = os.getenv("IQ_PASSWORD")
@@ -36,20 +36,20 @@ PARES = [
 MAX_DAILY_TRADES = 100
 MAX_LOSS_STREAK = 5
 PAUSE_TIME = 900
-MAX_RECONNECT_ATTEMPTS = 8
-RECONNECT_DELAY = 10
-RECONNECT_DELAY_LONG = 90
-MAX_SILENCE = 20
-RECONNECT_INTERVAL = 25  # ✅ CORRECTO: sin asteriscos extra
+MAX_RECONNECT_ATTEMPTS = 5
+RECONNECT_DELAY = 5          # Espera corta para reconectar rápido
+RECONNECT_DELAY_LONG = 60
+MAX_SILENCE = 18              # Detecta caída rápido
+RECONNECT_INTERVAL = 22       # Reconexión programada antes de corte Railway
 
 FUERZA_MINIMA = 35
 TOLERANCIA_NIVEL = 0.0018
 VENTANA_NIVELES = 5
 
-TIEMPO_ESPERA_EJECUCION = 0.5
-REINTENTOS_EJECUCION = 3
+TIEMPO_ESPERA_EJECUCION = 0.3
+REINTENTOS_EJECUCION = 2
 TIEMPO_MINIMO_VALIDO = 57
-ESPERA_TRAS_ERROR = 2
+ESPERA_TRAS_ERROR = 1
 
 # Variables globales
 DAILY_TRADES = 0
@@ -70,12 +70,12 @@ def send(msg):
     if TOKEN and CHAT_ID:
         try:
             requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                "https://api.telegram.org/bot{}/sendMessage".format(TOKEN),
                 data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"},
-                timeout=15
+                timeout=10
             )
         except Exception as e:
-            logging.error(f"Telegram: {str(e)}")
+            logging.error("Telegram: {}".format(str(e)))
 
 def listen_commands():
     global BOT_RUNNING
@@ -83,29 +83,31 @@ def listen_commands():
     while True:
         try:
             res = requests.get(
-                f"https://api.telegram.org/bot{TOKEN}/getUpdates",
-                params={"offset": last_update_id + 1, "timeout": 30},
-                timeout=35
+                "https://api.telegram.org/bot{}/getUpdates".format(TOKEN),
+                params={"offset": last_update_id + 1, "timeout": 20},
+                timeout=25
             )
             data = res.json()
             if not data.get("ok"):
-                time.sleep(2)
+                time.sleep(1)
                 continue
             for update in data.get("result", []):
                 last_update_id = update["update_id"]
                 text = update.get("message", {}).get("text", "").strip().lower()
                 chat_id = str(update["message"]["chat"]["id"])
-                if chat_id != str(CHAT_ID): continue
+                if chat_id != str(CHAT_ID):
+                    continue
                 if text == "/start":
                     if not BOT_RUNNING:
                         BOT_RUNNING = True
                         send("✅ <b>BOT INICIADO</b> — analizando pares OTC")
-                    else: send("ℹ️ Ya está activo")
+                    else:
+                        send("ℹ️ Ya está activo")
                 elif text == "/stop":
                     BOT_RUNNING = False
                     send("🛑 Detenido")
         except Exception as e:
-            logging.error(f"Comandos: {e}")
+            logging.error("Comandos: {}".format(e))
             time.sleep(1)
 
 # ====================================================
@@ -118,10 +120,11 @@ def reset_day():
         DAILY_TRADES = LOSS_STREAK = 0
         LAST_TRADE = SEÑAL_PENDIENTE = None
         CURRENT_DAY = today
-        if BOT_RUNNING: send("🔄 Nuevo día — contadores reiniciados")
+        if BOT_RUNNING:
+            send("🔄 Nuevo día — contadores reiniciados")
 
 # ====================================================
-# 🔌 CONEXIÓN + RECONEXIÓN FORZADA
+# 🔌 CONEXIÓN DIRECTA — SIN DEMORAS INNECESARIAS
 # ====================================================
 from iqoptionapi.stable_api import IQ_Option
 
@@ -135,71 +138,72 @@ def connect():
                 time.sleep(RECONNECT_DELAY_LONG)
                 attempts += 1
                 continue
-            # Limpieza absoluta
+            # Cierre limpio antes de conectar
             if IQ_API is not None:
-                try: IQ_API.close_connect()
-                except Exception: pass
+                try:
+                    IQ_API.close_connect()
+                except Exception:
+                    pass
                 IQ_API = None
                 gc.collect()
-            time.sleep(4)
+            time.sleep(1)  # Solo pausa mínima
 
             IQ_API = IQ_Option(EMAIL, PASSWORD)
             ok, reason = IQ_API.connect()
-            time.sleep(6)
-
+            # Prueba inmediata
             if ok:
                 try:
                     _ = IQ_API.get_server_timestamp()
                     IQ_API.change_balance("PRACTICE")
                     balance = IQ_API.get_balance()
                     LAST_VALID = LAST_FORCED_RECONNECT = time.time()
-                    send(f"✅ CONECTADO | Saldo: ${balance:.2f}")
+                    send("✅ CONECTADO DIRECTO | Saldo: ${:.2f}".format(balance))
                     return IQ_API
                 except Exception as val_err:
-                    logging.warning(f"Conectado sin datos: {val_err}")
+                    logging.warning("Conectado sin datos: {}".format(val_err))
                     ok = False
-            else:
-                logging.warning(f"Intento {attempts+1}: {reason}")
+            logging.warning("Intento {} fallido: {}".format(attempts+1, reason))
         except Exception as e:
-            logging.error(f"Error conexión: {str(e)}")
+            logging.error("Error conexión: {}".format(str(e)))
         attempts += 1
         time.sleep(RECONNECT_DELAY)
-    send("💥 Pausa larga 90s…")
+    send("💥 Pausa larga — reintentando…")
     time.sleep(RECONNECT_DELAY_LONG)
     return connect()
 
 def ensure_connection():
-    """Verifica + reinicia automáticamente antes de que corte Railway"""
+    """Verificación rápida + reconexión antes de corte"""
     global IQ_API, LAST_VALID, LAST_FORCED_RECONNECT
     ahora = time.time()
-    # RECONEXIÓN FORZADA CADA 25s, SIN ESPERAR ERROR
+    # Reconexión programada fija
     if ahora - LAST_FORCED_RECONNECT > RECONNECT_INTERVAL:
-        logging.info("🔄 Reconexión programada para Railway…")
+        logging.info("🔄 Reconexión directa programada…")
         IQ_API = connect()
         return IQ_API is not None
+    # Verificación ligera
     try:
         if IQ_API and IQ_API.check_connect() and (ahora - LAST_VALID < MAX_SILENCE):
             IQ_API.get_server_timestamp()
             LAST_VALID = ahora
             return True
     except Exception as e:
-        logging.warning(f"Conexión caída: {e}")
+        logging.warning("Conexión perdida: {}".format(e))
     IQ_API = connect()
     return IQ_API is not None
 
 # ====================================================
-# 📥 OBTENER VELAS
+# 📥 OBTENER VELAS — PROCESO LIGERO
 # ====================================================
-def get_df(iq, pair, retries=3):
+def get_df(iq, pair, retries=2):
     global LAST_VALID
     for _ in range(retries):
         try:
             if not ensure_connection():
-                time.sleep(ESPERA_TRAS_ERROR)
+                time.sleep(0.2)
                 continue
             data = iq.get_candles(pair, TIMEFRAME_M1, 25, time.time())
             if not data or len(data) < 10:
-                time.sleep(0.8)
+                time.sleep(0.2)
                 continue
             df = pd.DataFrame(data)
             df.rename(columns={"max":"high", "min":"low"}, inplace=True)
@@ -208,31 +212,33 @@ def get_df(iq, pair, retries=3):
             return df
         except Exception as e:
             err = str(e).lower()
-            logging.error(f"{pair}: {err}")
+            logging.error("{}: {}".format(pair, err))
             if "need reconnect" in err or "websocket" in err:
                 ensure_connection()
             time.sleep(ESPERA_TRAS_ERROR)
     return None
 
 # ====================================================
-# 🚀 EJECUCIÓN
+# 🚀 EJECUCIÓN RÁPIDA
 # ====================================================
 def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
     for intento in range(REINTENTOS_EJECUCION+1):
         try:
-            if not ensure_connection(): continue
+            if not ensure_connection():
+                continue
             ts = iq.get_server_timestamp()
             sec_rest = 60 - (ts % 60)
             if sec_rest < TIEMPO_MINIMO_VALIDO:
-                logging.warning(f"Tiempo insuficiente {sec_rest}s")
+                logging.warning("Tiempo insuficiente {}s".format(sec_rest))
                 return False, None
             time.sleep(TIEMPO_ESPERA_EJECUCION)
             ok, tid = iq.buy(monto, par, direccion, vencimiento)
-            if ok and tid>0:
+            if ok and tid > 0:
                 return True, tid
-            if intento<REINTENTOS_EJECUCION: time.sleep(0.6)
+            if intento < REINTENTOS_EJECUCION:
+                time.sleep(0.2)
         except Exception as e:
-            logging.error(f"Operación: {e}")
+            logging.error("Operación: {}".format(e))
             ensure_connection()
     return False, None
 
@@ -242,22 +248,34 @@ def ejecutar_operacion(iq, monto, par, direccion, vencimiento):
 def main():
     global BOT_RUNNING, LOSS_STREAK, LAST_LOSS, DAILY_TRADES, LAST_TRADE, SEÑAL_PENDIENTE, IQ_API
     threading.Thread(target=listen_commands, daemon=True).start()
+    # CONEXIÓN DIRECTA AL INICIAR
     IQ_API = connect()
     send("ℹ️ Sistema listo — usa /start para operar")
     last_candle = None
 
     while True:
         try:
-            if not BOT_RUNNING: time.sleep(1); continue
+            if not BOT_RUNNING:
+                time.sleep(0.5)
+                continue
             reset_day()
-            if not ensure_connection(): time.sleep(2); continue
+            if not ensure_connection():
+                time.sleep(0.5)
+                continue
             if DAILY_TRADES >= MAX_DAILY_TRADES:
                 send("ℹ️ Límite diario alcanzado")
-                BOT_RUNNING=False; time.sleep(300); continue
+                BOT_RUNNING = False
+                time.sleep(300)
+                continue
             if LOSS_STREAK >= MAX_LOSS_STREAK:
-                rest = int(PAUSE_TIME - (time.time()-LAST_LOSS))
-                if rest>0: send(f"⏸️ Pausa {rest//60}min"); time.sleep(5); continue
-                else: LOSS_STREAK=0; send("✅ Pausa finalizada")
+                rest = int(PAUSE_TIME - (time.time() - LAST_LOSS))
+                if rest > 0:
+                    send("⏸️ Pausa {}min".format(rest//60))
+                    time.sleep(5)
+                    continue
+                else:
+                    LOSS_STREAK = 0
+                    send("✅ Pausa finalizada")
 
             st = IQ_API.get_server_timestamp()
             sec = st % 60
@@ -268,57 +286,68 @@ def main():
                 if SEÑAL_PENDIENTE:
                     p, sig, fz, tn = SEÑAL_PENDIENTE
                     SEÑAL_PENDIENTE = None
-                    if (p,sig) == LAST_TRADE: continue
-                    LAST_TRADE = (p,sig)
-                    send(f"""🚀 OPERACIÓN
-💹 {p} | 📍 {tn.upper()} | 💪 {fz}
-{'🟢 COMPRA' if sig=='call' else '🔴 VENTA'}""")
+                    if (p, sig) == LAST_TRADE:
+                        continue
+                    LAST_TRADE = (p, sig)
+                    send("""🚀 OPERACIÓN
+💹 {} | 📍 {} | 💪 {}
+{}""".format(p, tn.upper(), fz, "🟢 COMPRA" if sig == "call" else "🔴 VENTA"))
                     ok, tid = ejecutar_operacion(IQ_API, BASE_AMOUNT, p, sig, EXPIRATION)
                     if ok:
-                        DAILY_TRADES +=1
-                        send(f"✅ Abierta — Total: {DAILY_TRADES}")
+                        DAILY_TRADES += 1
+                        send("✅ Abierta — Total: {}".format(DAILY_TRADES))
                         time.sleep(65)
                         try:
                             res = IQ_API.check_win_v4(tid)
-                            if res<0:
-                                LOSS_STREAK+=1; LAST_LOSS=time.time()
-                                send(f"❌ -${abs(res):.2f} | Racha {LOSS_STREAK}")
+                            if res < 0:
+                                LOSS_STREAK += 1
+                                LAST_LOSS = time.time()
+                                send("❌ -${:.2f} | Racha {}".format(abs(res), LOSS_STREAK))
                             else:
-                                LOSS_STREAK=0
-                                send(f"✅ +${res:.2f}")
+                                LOSS_STREAK = 0
+                                send("✅ +${:.2f}".format(res))
                         except Exception as e:
-                            send(f"⚠️ Verificación: {e}")
+                            send("⚠️ Verificación: {}".format(e))
                             ensure_connection()
-                    else: send(f"❌ Falló en {p}")
+                    else:
+                        send("❌ Falló en {}".format(p))
 
             if 10 <= sec <= 57:
-                mejor = None; max_fz = 0
+                mejor = None
+                max_fz = 0
                 for par in PARES:
                     df = get_df(IQ_API, par)
-                    if df is None: continue
+                    if df is None:
+                        time.sleep(0.15)
+                        continue
                     try:
                         from strategy import get_reversal_signal
                         resultado = get_reversal_signal(df, TOLERANCIA_NIVEL, VENTANA_NIVELES)
-                        if resultado and isinstance(resultado, tuple) and len(resultado)==3:
+                        if resultado and isinstance(resultado, tuple) and len(resultado) == 3:
                             sig, fz, tn = resultado
-                            if isinstance(fz, (int,float)) and fz>=FUERZA_MINIMA and fz>max_fz:
-                                max_fz=fz; mejor=(par, sig, fz, tn)
+                            if isinstance(fz, (int, float)) and fz >= FUERZA_MINIMA and fz > max_fz:
+                                max_fz = fz
+                                mejor = (par, sig, fz, tn)
                     except Exception as e:
-                        logging.error(f"Estrategia {par}: {e}")
+                        logging.error("Estrategia {}: {}".format(par, e))
                 if 55 <= sec <= 57 and mejor:
                     SEÑAL_PENDIENTE = mejor
                     par, sig, fz, tn = mejor
-                    send(f"🔍 Señal {par} {tn} | Fuerza: {fz}")
-            time.sleep(0.2)
+                    send("🔍 Señal {} {} | Fuerza: {}".format(par, tn, fz))
+            time.sleep(0.15)  # Ciclo rápido y estable
         except Exception as e:
-            send(f"💥 Error: {str(e)} — reconectando…")
+            send("💥 Error: {} — reconectando…".format(str(e)))
             logging.exception("Error global")
-            time.sleep(5)
+            time.sleep(2)
             ensure_connection()
 
 if __name__ == "__main__":
-    req = ["IQ_EMAIL","IQ_PASSWORD","TELEGRAM_TOKEN","TELEGRAM_CHAT_ID"]
+    req = ["IQ_EMAIL", "IQ_PASSWORD", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"]
     faltan = [v for v in req if not os.getenv(v)]
-    if faltan: print(f"❌ Faltan vars: {faltan}"); sys.exit(1)
-    if not os.path.exists("strategy.py"): print("❌ Falta strategy.py"); sys.exit(1)
+    if faltan:
+        print("❌ Faltan vars: {}".format(faltan))
+        sys.exit(1)
+    if not os.path.exists("strategy.py"):
+        print("❌ Falta strategy.py")
+        sys.exit(1)
     main()
