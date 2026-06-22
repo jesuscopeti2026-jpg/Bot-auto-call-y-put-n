@@ -8,7 +8,7 @@ import threading
 import logging
 from datetime import datetime, timezone
 
-# Bloqueo total de mensajes no deseados
+# Bloqueo total de mensajes de error de librerías
 class BlockOutput:
     def __init__(self):
         self._stdout_fd = os.dup(1)
@@ -26,7 +26,7 @@ class BlockOutput:
         os.close(self._stdout_fd)
         os.close(self._stderr_fd)
 
-# Silenciar librerías externas
+# Silenciar logs de librerías externas
 logging.basicConfig(level=logging.CRITICAL)
 logging.getLogger("iqoptionapi").setLevel(logging.CRITICAL)
 logging.getLogger("websocket").setLevel(logging.CRITICAL)
@@ -37,7 +37,7 @@ with BlockOutput():
     from strategy import get_reversal_signal
     from iqoptionapi.stable_api import IQ_Option
 
-# Activar solo tus mensajes
+# Solo mostrar tus mensajes
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(message)s",
