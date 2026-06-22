@@ -21,7 +21,6 @@ def get_reversal_signal(df, tolerancia_nivel=0.0032, ventana_niveles=4):
     df['macd'] = df['ema13'] - df['ema21']
     df['signal'] = df['macd'].ewm(span=4, adjust=False).mean()
 
-    # ✅ Usamos datos de TODA la vela actual y anteriores
     try:
         e8_1, e13_1, e21_1 = float(df['ema8'].iloc[-1]), float(df['ema13'].iloc[-1]), float(df['ema21'].iloc[-1])
         c1, c2, o1 = float(df['close'].iloc[-1]), float(df['close'].iloc[-2]), float(df['open'].iloc[-1])
@@ -34,7 +33,6 @@ def get_reversal_signal(df, tolerancia_nivel=0.0032, ventana_niveles=4):
 
     fuerza, senal, tipo = 0, None, ""
 
-    # ✅ CONDICIONES EVALUADAS DURANTE TODO EL TIEMPO DE LA VELA
     if (e8_1 > e13_1 and macd1 > sig1 and 30 < rsi1 < 78 and 
         c1 > o1 and c1 > l1 and vol1 >= vol_prom * 0.25):
         senal, tipo, fuerza = "call", "soporte", 38
