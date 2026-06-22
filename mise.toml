@@ -1,0 +1,5 @@
+[tools]
+python = "3.10.14"
+
+[env]
+MISE_PYTHON_GITHUB_ATTESTATIONS = "false"
