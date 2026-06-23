@@ -1,103 +1,203 @@
+import pandas as pd
 import numpy as np
 
 # ================= INDICADORES =================
 
 def add_indicators(df):
+
+    # EMA
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
     # ATR
-    df["tr"] = np.maximum(df["high"] - df["low"],
-                np.maximum(abs(df["high"] - df["close"].shift()),
-                           abs(df["low"] - df["close"].shift())))
-    df["atr"] = df["tr"].rolling(14).mean()
+    high_low = df["high"] - df["low"]
+    high_close = abs(df["high"] - df["close"].shift())
+    low_close = abs(df["low"] - df["close"].shift())
+
+    ranges = pd.concat(
+        [high_low, high_close, low_close],
+        axis=1
+    )
+
+    true_range = ranges.max(axis=1)
+
+    df["atr"] = true_range.rolling(14).mean()
+
+    # RSI
+    delta = df["close"].diff()
+
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+
+    rs = avg_gain / avg_loss
+
+    df["rsi"] = 100 - (100 / (1 + rs))
 
     return df
 
-# ================= SEÑAL =================
+# ================= TENDENCIA =================
+
+def trend(df):
+
+    ema20 = df["ema20"].iloc[-1]
+    ema50 = df["ema50"].iloc[-1]
+
+    if ema20 > ema50:
+        return "call"
+
+    if ema20 < ema50:
+        return "put"
+
+    return None
+
+# ================= IMPULSO =================
+
+def strong_candle(candle):
+
+    body = abs(candle["close"] - candle["open"])
+    full = candle["high"] - candle["low"]
+
+    if full == 0:
+        return False
+
+    return body / full > 0.55
+
+# ================= CONTINUIDAD =================
+
+def continuation(df, direction):
+
+    c1 = df.iloc[-1]
+    c2 = df.iloc[-2]
+
+    # CALL
+    if direction == "call":
+
+        if (
+            c1["close"] > c1["open"] and
+            c2["close"] > c2["open"] and
+            c1["close"] > c2["close"] and
+            strong_candle(c1)
+        ):
+            return True
+
+    # PUT
+    if direction == "put":
+
+        if (
+            c1["close"] < c1["open"] and
+            c2["close"] < c2["open"] and
+            c1["close"] < c2["close"] and
+            strong_candle(c1)
+        ):
+            return True
+
+    return False
+
+# ================= SOPORTE / RESISTENCIA =================
+
+def support_resistance(df):
+
+    highs = []
+    lows = []
+
+    # buscar pivotes
+    for i in range(10, len(df)-10):
+
+        high = df["high"].iloc[i]
+        low = df["low"].iloc[i]
+
+        # resistencia
+        if (
+            high == max(df["high"].iloc[i-5:i+5])
+        ):
+            highs.append(high)
+
+        # soporte
+        if (
+            low == min(df["low"].iloc[i-5:i+5])
+        ):
+            lows.append(low)
+
+    return highs, lows
+
+# ================= FILTRO REVERSION =================
+
+def near_reversal_zone(df):
+
+    price = df["close"].iloc[-1]
+    atr = df["atr"].iloc[-1]
+
+    highs, lows = support_resistance(df)
+
+    zone_distance = atr * 0.40
+
+    # cerca resistencia
+    for h in highs:
+
+        if abs(price - h) < zone_distance:
+            return True
+
+    # cerca soporte
+    for l in lows:
+
+        if abs(price - l) < zone_distance:
+            return True
+
+    return False
+
+# ================= VOLATILIDAD =================
+
+def volatility_ok(df):
+
+    atr = df["atr"].iloc[-1]
+    mean_atr = df["atr"].mean()
+
+    return atr > mean_atr * 0.7
+
+# ================= RSI FILTER =================
+
+def rsi_ok(df, direction):
+
+    rsi = df["rsi"].iloc[-1]
+
+    if direction == "call":
+        return 50 < rsi < 75
+
+    if direction == "put":
+        return 25 < rsi < 50
+
+    return False
+
+# ================= SEÑAL PRINCIPAL =================
 
 def pro_signal(df_m1, df_m5):
 
-    if len(df_m1) < 60 or len(df_m5) < 60:
-        return None
+    if len(df_m1) < 80:
+        return None, None
 
-    score = 0
+    # volatilidad
+    if not volatility_ok(df_m1):
+        return None, None
 
-    last = df_m1.iloc[-1]
-    prev = df_m1.iloc[-2]
+    # tendencia
+    direction = trend(df_m5)
 
-    # ================= TENDENCIA M5 =================
-    ema20 = df_m5["ema20"].iloc[-1]
-    ema50 = df_m5["ema50"].iloc[-1]
+    if direction is None:
+        return None, None
 
-    trend_up = ema20 > ema50
-    trend_down = ema20 < ema50
+    # 🔥 NO operar en soporte/resistencia
+    if near_reversal_zone(df_m1):
+        return None, None
 
-    if abs(ema20 - ema50) > 0.00005:
-        score += 1
+    # continuidad
+    if not continuation(df_m1, direction):
+        return None, None
 
-    # ================= BREAK =================
-    if last["close"] > prev["high"]:
-        direction = "call"
-        score += 2
-    elif last["close"] < prev["low"]:
-        direction = "put"
-        score += 2
-    else:
-        return None
+    # RSI
+    if not rsi_ok(df_m1, direction):
+        return None, None
 
-    # ================= A FAVOR DE TENDENCIA =================
-    if (direction == "call" and trend_up) or (direction == "put" and trend_down):
-        score += 2
-
-    # ================= FUERZA =================
-    body = abs(last["close"] - last["open"])
-    range_ = last["high"] - last["low"]
-
-    if range_ > 0 and (body / range_) > 0.5:  # 🔥 más flexible para M3
-        score += 1
-
-    # ================= VOLATILIDAD =================
-    if df_m1["atr"].iloc[-1] > df_m1["atr"].mean():
-        score += 1
-
-    # ================= FILTROS NEGATIVOS =================
-
-    # sobreextensión (más flexible para M3)
-    move = abs(df_m1["close"].iloc[-1] - df_m1["close"].iloc[-7])
-    if move > df_m1["atr"].iloc[-1] * 2.5:
-        score -= 2
-
-    # zona SR
-    high = df_m1["high"].rolling(50).max().iloc[-2]
-    low = df_m1["low"].rolling(50).min().iloc[-2]
-    atr = df_m1["atr"].iloc[-1]
-
-    if abs(last["close"] - high) < atr:
-        score -= 2
-
-    if abs(last["close"] - low) < atr:
-        score -= 2
-
-    # velas consecutivas (menos agresivo para M3)
-    last3 = df_m1.iloc[-3:]
-    if all(c["close"] > c["open"] for _, c in last3.iterrows()) or \
-       all(c["close"] < c["open"] for _, c in last3.iterrows()):
-        score -= 1
-
-    # rechazo
-    upper = last["high"] - max(last["close"], last["open"])
-    lower = min(last["close"], last["open"]) - last["low"]
-
-    if direction == "call" and upper > body * 1.8:
-        score -= 2
-
-    if direction == "put" and lower > body * 1.8:
-        score -= 2
-
-    # ================= DECISIÓN =================
-
-    if score >= 4:
-        return direction
-
-    return None
+    return direction, 1
