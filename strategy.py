@@ -1,49 +1,103 @@
 import numpy as np
-import pandas as pd
 
-def get_reversal_signal(df):
-    if df is None or len(df) < 20:
+# ================= INDICADORES =================
+
+def add_indicators(df):
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+
+    # ATR
+    df["tr"] = np.maximum(df["high"] - df["low"],
+                np.maximum(abs(df["high"] - df["close"].shift()),
+                           abs(df["low"] - df["close"].shift())))
+    df["atr"] = df["tr"].rolling(14).mean()
+
+    return df
+
+# ================= SEÑAL =================
+
+def pro_signal(df_m1, df_m5):
+
+    if len(df_m1) < 60 or len(df_m5) < 60:
         return None
 
-    df = df.copy()
-    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+    score = 0
 
-    df['ema8'] = df['close'].ewm(span=8).mean()
-    df['ema13'] = df['close'].ewm(span=13).mean()
-    df['ema21'] = df['close'].ewm(span=21).mean()
+    last = df_m1.iloc[-1]
+    prev = df_m1.iloc[-2]
 
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    # ================= TENDENCIA M5 =================
+    ema20 = df_m5["ema20"].iloc[-1]
+    ema50 = df_m5["ema50"].iloc[-1]
 
-    avg_gain = gain.rolling(6).mean()
-    avg_loss = loss.rolling(6).mean().replace(0, 0.0001)
+    trend_up = ema20 > ema50
+    trend_down = ema20 < ema50
 
-    rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+    if abs(ema20 - ema50) > 0.00005:
+        score += 1
 
-    df['macd'] = df['ema13'] - df['ema21']
-    df['signal'] = df['macd'].ewm(span=4).mean()
+    # ================= BREAK =================
+    if last["close"] > prev["high"]:
+        direction = "call"
+        score += 2
+    elif last["close"] < prev["low"]:
+        direction = "put"
+        score += 2
+    else:
+        return None
 
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    # ================= A FAVOR DE TENDENCIA =================
+    if (direction == "call" and trend_up) or (direction == "put" and trend_down):
+        score += 2
 
-    # CALL
-    if (
-        last['ema8'] > last['ema13'] and
-        last['macd'] > last['signal'] and
-        30 < last['rsi'] < 75 and
-        last['close'] > last['open']
-    ):
-        return ("call", 70, "soporte")
+    # ================= FUERZA =================
+    body = abs(last["close"] - last["open"])
+    range_ = last["high"] - last["low"]
 
-    # PUT
-    if (
-        last['ema8'] < last['ema13'] and
-        last['macd'] < last['signal'] and
-        25 < last['rsi'] < 70 and
-        last['close'] < last['open']
-    ):
-        return ("put", 70, "resistencia")
+    if range_ > 0 and (body / range_) > 0.5:  # 🔥 más flexible para M3
+        score += 1
+
+    # ================= VOLATILIDAD =================
+    if df_m1["atr"].iloc[-1] > df_m1["atr"].mean():
+        score += 1
+
+    # ================= FILTROS NEGATIVOS =================
+
+    # sobreextensión (más flexible para M3)
+    move = abs(df_m1["close"].iloc[-1] - df_m1["close"].iloc[-7])
+    if move > df_m1["atr"].iloc[-1] * 2.5:
+        score -= 2
+
+    # zona SR
+    high = df_m1["high"].rolling(50).max().iloc[-2]
+    low = df_m1["low"].rolling(50).min().iloc[-2]
+    atr = df_m1["atr"].iloc[-1]
+
+    if abs(last["close"] - high) < atr:
+        score -= 2
+
+    if abs(last["close"] - low) < atr:
+        score -= 2
+
+    # velas consecutivas (menos agresivo para M3)
+    last3 = df_m1.iloc[-3:]
+    if all(c["close"] > c["open"] for _, c in last3.iterrows()) or \
+       all(c["close"] < c["open"] for _, c in last3.iterrows()):
+        score -= 1
+
+    # rechazo
+    upper = last["high"] - max(last["close"], last["open"])
+    lower = min(last["close"], last["open"]) - last["low"]
+
+    if direction == "call" and upper > body * 1.8:
+        score -= 2
+
+    if direction == "put" and lower > body * 1.8:
+        score -= 2
+
+    # ================= DECISIÓN =================
+
+    if score >= 4:
+        return direction
 
     return None
