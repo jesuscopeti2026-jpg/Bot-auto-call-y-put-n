@@ -20,7 +20,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TIMEFRAME = 60
 EXPIRATION = 1
-BASE_AMOUNT = 2000  # 🔥 baja riesgo
+BASE_AMOUNT = 2000
 
 MAX_LOSS_STREAK = 3
 
@@ -39,6 +39,9 @@ last_trade_time = 0
 last_trade_candle = None
 loss_streak = 0
 
+BOT_RUNNING = True
+LAST_UPDATE_ID = None
+
 # ================= TELEGRAM =================
 
 def send(msg):
@@ -48,6 +51,41 @@ def send(msg):
             data={"chat_id": CHAT_ID, "text": msg},
             timeout=5
         )
+    except:
+        pass
+
+def check_telegram():
+    global BOT_RUNNING, LAST_UPDATE_ID
+
+    try:
+        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+
+        params = {}
+        if LAST_UPDATE_ID is not None:
+            params["offset"] = LAST_UPDATE_ID
+
+        res = requests.get(url, params=params, timeout=5).json()
+
+        for update in res.get("result", []):
+            LAST_UPDATE_ID = update["update_id"] + 1
+
+            if "message" not in update:
+                continue
+
+            text = update["message"].get("text", "").lower()
+            chat = str(update["message"]["chat"]["id"])
+
+            if chat != str(CHAT_ID):
+                continue
+
+            if text == "/stop":
+                BOT_RUNNING = False
+                send("🛑 BOT DETENIDO DESDE TELEGRAM")
+
+            elif text == "/start":
+                BOT_RUNNING = True
+                send("🚀 BOT ACTIVADO DESDE TELEGRAM")
+
     except:
         pass
 
@@ -71,9 +109,14 @@ def indicators(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
-    df["tr"] = np.maximum(df["high"] - df["low"],
-                np.maximum(abs(df["high"] - df["close"].shift()),
-                           abs(df["low"] - df["close"].shift())))
+    df["tr"] = np.maximum(
+        df["high"] - df["low"],
+        np.maximum(
+            abs(df["high"] - df["close"].shift()),
+            abs(df["low"] - df["close"].shift())
+        )
+    )
+
     df["atr"] = df["tr"].rolling(14).mean()
 
     return df
@@ -84,10 +127,8 @@ def get_candles(pair, tf):
     try:
         data = iq.get_candles(pair, tf, 100, time.time())
         df = pd.DataFrame(data)
-
         df.rename(columns={"max": "high", "min": "low"}, inplace=True)
         return indicators(df)
-
     except:
         return None
 
@@ -98,11 +139,9 @@ def sniper_pro(df_m1, df_m5):
     last = df_m1.iloc[-1]
     prev = df_m1.iloc[-2]
 
-    # 🔥 tendencia M5 (filtro fuerte)
     trend_up = df_m5.iloc[-1]["ema20"] > df_m5.iloc[-1]["ema50"]
     trend_down = df_m5.iloc[-1]["ema20"] < df_m5.iloc[-1]["ema50"]
 
-    # 🔥 evitar lateral
     if last["atr"] < df_m1["atr"].mean():
         return None
 
@@ -114,7 +153,7 @@ def sniper_pro(df_m1, df_m5):
 
     strength = body / range_
 
-    # ================= PUT =================
+    # PUT
     if (
         prev["close"] > prev["open"] and
         last["close"] < last["open"] and
@@ -124,7 +163,7 @@ def sniper_pro(df_m1, df_m5):
     ):
         return "put"
 
-    # ================= CALL =================
+    # CALL
     if (
         prev["close"] < prev["open"] and
         last["close"] > last["open"] and
@@ -167,9 +206,7 @@ def check_result():
         if time.time() - last_trade_time < 65:
             return
 
-        # simulación básica (puedes mejorar con API)
         result = iq.get_balance()
-
         trade_open = False
 
     except:
@@ -179,6 +216,12 @@ def check_result():
 
 while True:
     try:
+        check_telegram()
+
+        if not BOT_RUNNING:
+            time.sleep(1)
+            continue
+
         check_result()
 
         if trade_open:
@@ -204,7 +247,6 @@ while True:
 
             if signal:
 
-                # 🔥 protección pérdidas
                 if loss_streak >= MAX_LOSS_STREAK:
                     send("🛑 STOP POR RACHAS")
                     time.sleep(120)
