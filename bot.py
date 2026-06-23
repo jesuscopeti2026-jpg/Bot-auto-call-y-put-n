@@ -20,7 +20,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TIMEFRAME = 60
 EXPIRATION = 1
-BASE_AMOUNT = 20780  # 🔥 baja riesgo
+BASE_AMOUNT = 2000  # 🔥 baja riesgo
 
 MAX_LOSS_STREAK = 3
 
