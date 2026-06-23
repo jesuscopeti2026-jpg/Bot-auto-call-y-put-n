@@ -9,7 +9,6 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 from iqoptionapi.stable_api import IQ_Option
 from strategy import get_reversal_signal
 
-# 🔐 VARIABLES
 TOKEN = os.getenv("BOT_TOKEN")
 IQ_EMAIL = os.getenv("IQ_EMAIL")
 IQ_PASSWORD = os.getenv("IQ_PASSWORD")
@@ -22,7 +21,6 @@ if not IQ_EMAIL or not IQ_PASSWORD:
     print("❌ Falta IQ_EMAIL o IQ_PASSWORD")
     sys.exit(1)
 
-# ⚙️ CONFIG
 PAR = "EURUSD"
 TIMEFRAME = 60
 CANTIDAD = 1
@@ -30,7 +28,6 @@ EXPIRACION = 1
 
 Iq = None
 
-# 🔌 CONEXIÓN IQ OPTION
 def conectar_iq():
     try:
         print("🔌 Conectando a IQ Option...")
@@ -48,14 +45,12 @@ def conectar_iq():
         print(f"❌ Error IQ: {e}")
         return None
 
-# 📊 OBTENER DATOS
 def get_candles():
     candles = Iq.get_candles(PAR, TIMEFRAME, 50, time.time())
     df = pd.DataFrame(candles)
     df.rename(columns={"max": "high", "min": "low"}, inplace=True)
     return df
 
-# 💰 EJECUTAR TRADE
 def ejecutar_trade(direccion):
     try:
         status, trade_id = Iq.buy(CANTIDAD, PAR, direccion, EXPIRACION)
@@ -64,10 +59,8 @@ def ejecutar_trade(direccion):
         print(f"Error trade: {e}")
         return False, None
 
-# 🤖 COMANDOS TELEGRAM
-
 def start(update: Update, context: CallbackContext):
-    update.message.reply_text("🤖 Bot activo en Railway 🚀")
+    update.message.reply_text("🤖 Bot funcionando en Railway 🚀")
 
 def operar(update: Update, context: CallbackContext):
     global Iq
@@ -96,7 +89,6 @@ def operar(update: Update, context: CallbackContext):
     else:
         update.message.reply_text("❌ Error al ejecutar trade")
 
-# 🚀 MAIN
 def main():
     global Iq
 
