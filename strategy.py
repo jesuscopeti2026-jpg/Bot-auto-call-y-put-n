@@ -6,8 +6,10 @@ import numpy as np
 def add_indicators(df):
     df = df.copy()
 
-    # EMA
+    # EMAs
+    df["ema9"] = df["close"].ewm(span=9).mean()
     df["ema20"] = df["close"].ewm(span=20).mean()
+    df["ema21"] = df["close"].ewm(span=21).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
     # ATR
@@ -15,17 +17,12 @@ def add_indicators(df):
     high_close = abs(df["high"] - df["close"].shift())
     low_close = abs(df["low"] - df["close"].shift())
 
-    ranges = pd.concat(
-        [high_low, high_close, low_close],
-        axis=1
-    )
-
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
     true_range = ranges.max(axis=1)
     df["atr"] = true_range.rolling(14).mean()
 
     # RSI
     delta = df["close"].diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -38,29 +35,29 @@ def add_indicators(df):
     return df
 
 
-# ================= TENDENCIA =================
+# ================= TREND =================
 
 def trend(df):
     if len(df) < 60:
-        return None
+        return None, 0
 
-    # VELA CERRADA
-    ema20 = df["ema20"].iloc[-2]
-    ema50 = df["ema50"].iloc[-2]
+    e9 = df["ema9"].iloc[-2]
+    e21 = df["ema21"].iloc[-2]
+    e50 = df["ema50"].iloc[-2]
 
-    if pd.isna(ema20) or pd.isna(ema50):
-        return None
+    if pd.isna(e9) or pd.isna(e21) or pd.isna(e50):
+        return None, 0
 
-    if ema20 > ema50:
-        return "call"
+    if e9 > e21 > e50:
+        return "call", 2
 
-    if ema20 < ema50:
-        return "put"
+    if e9 < e21 < e50:
+        return "put", 2
 
-    return None
+    return None, 0
 
 
-# ================= IMPULSO =================
+# ================= CANDLE QUALITY =================
 
 def strong_candle(candle):
     body = abs(candle["close"] - candle["open"])
@@ -72,17 +69,33 @@ def strong_candle(candle):
     return (body / full) > 0.55
 
 
-# ================= CONTINUIDAD =================
+def rejection_filter(candle):
+    body = abs(candle["close"] - candle["open"])
+
+    if body == 0:
+        return False
+
+    upper = candle["high"] - max(candle["close"], candle["open"])
+    lower = min(candle["close"], candle["open"]) - candle["low"]
+
+    if upper > body * 1.2:
+        return False
+
+    if lower > body * 1.2:
+        return False
+
+    return True
+
+
+# ================= CONTINUATION =================
 
 def continuation(df, direction):
     if len(df) < 4:
         return False
 
-    # SOLO VELAS CERRADAS
     c1 = df.iloc[-2]
     c2 = df.iloc[-3]
 
-    # CALL
     if direction == "call":
         if (
             c1["close"] > c1["open"] and
@@ -92,7 +105,6 @@ def continuation(df, direction):
         ):
             return True
 
-    # PUT
     if direction == "put":
         if (
             c1["close"] < c1["open"] and
@@ -118,24 +130,19 @@ def support_resistance(df):
         high = df["high"].iloc[i]
         low = df["low"].iloc[i]
 
-        # resistencia
-        if high == max(df["high"].iloc[i - 5:i + 5]):
+        if high == max(df["high"].iloc[i-5:i+5]):
             highs.append(high)
 
-        # soporte
-        if low == min(df["low"].iloc[i - 5:i + 5]):
+        if low == min(df["low"].iloc[i-5:i+5]):
             lows.append(low)
 
     return highs, lows
 
 
-# ================= FILTRO REVERSION =================
-
 def near_reversal_zone(df):
     if len(df) < 30:
         return False
 
-    # VELA CERRADA
     price = df["close"].iloc[-2]
     atr = df["atr"].iloc[-2]
 
@@ -143,7 +150,7 @@ def near_reversal_zone(df):
         return False
 
     highs, lows = support_resistance(df)
-    zone_distance = atr * 0.40
+    zone_distance = atr * 0.4
 
     for h in highs:
         if abs(price - h) < zone_distance:
@@ -156,7 +163,7 @@ def near_reversal_zone(df):
     return False
 
 
-# ================= VOLATILIDAD =================
+# ================= VOLATILITY =================
 
 def volatility_ok(df):
     if len(df) < 20:
@@ -171,7 +178,7 @@ def volatility_ok(df):
     return atr > mean_atr * 0.7
 
 
-# ================= RSI FILTER =================
+# ================= RSI =================
 
 def rsi_ok(df, direction):
     rsi = df["rsi"].iloc[-2]
@@ -180,40 +187,71 @@ def rsi_ok(df, direction):
         return False
 
     if direction == "call":
-        return 50 < rsi < 75
+        return 52 < rsi < 68
 
     if direction == "put":
-        return 25 < rsi < 50
+        return 32 < rsi < 48
 
     return False
 
 
-# ================= SEÑAL PRINCIPAL =================
+# ================= MOMENTUM =================
+
+def momentum_score(df):
+    c1 = df.iloc[-2]
+    c2 = df.iloc[-3]
+
+    score = 0
+
+    body1 = abs(c1["close"] - c1["open"])
+    body2 = abs(c2["close"] - c2["open"])
+
+    avg_body = abs(df["close"] - df["open"]).tail(20).mean()
+
+    if body1 > avg_body:
+        score += 1
+
+    if body2 > avg_body:
+        score += 1
+
+    return score
+
+
+# ================= SIGNAL =================
 
 def pro_signal(df_m1, df_m5):
     if len(df_m1) < 80 or len(df_m5) < 80:
         return None, None
 
-    # volatilidad
-    if not volatility_ok(df_m1):
-        return None, None
+    score = 0
 
-    # tendencia
-    direction = trend(df_m5)
+    direction, trend_score = trend(df_m5)
 
     if direction is None:
         return None, None
 
-    # filtro soporte / resistencia
+    score += trend_score
+
+    if volatility_ok(df_m1):
+        score += 1
+
+    if continuation(df_m1, direction):
+        score += 1
+
+    if rsi_ok(df_m1, direction):
+        score += 1
+
+    candle = df_m1.iloc[-2]
+
+    if rejection_filter(candle):
+        score += 1
+
+    score += momentum_score(df_m1)
+
     if near_reversal_zone(df_m1):
-        return None, None
+        score -= 3
 
-    # continuidad
-    if not continuation(df_m1, direction):
-        return None, None
+    if score >= 5:
+        return direction, 1
 
-    # RSI
-    if not rsi_ok(df_m1, direction):
-        return None, None
-
-    return direction, 1
+    return None, None
