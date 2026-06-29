@@ -8,7 +8,6 @@ def add_indicators(df):
 
     # EMAs
     df["ema9"] = df["close"].ewm(span=9).mean()
-    df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema21"] = df["close"].ewm(span=21).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
@@ -35,7 +34,7 @@ def add_indicators(df):
     return df
 
 
-# ================= TREND =================
+# ================= TENDENCIA =================
 
 def trend(df):
     if len(df) < 60:
@@ -57,7 +56,22 @@ def trend(df):
     return None, 0
 
 
-# ================= CANDLE QUALITY =================
+# ================= MERCADO LATERAL =================
+
+def market_strength(df):
+    e21_now = df["ema21"].iloc[-2]
+    e21_prev = df["ema21"].iloc[-7]
+    atr = df["atr"].iloc[-2]
+
+    if pd.isna(atr):
+        return False
+
+    slope = abs(e21_now - e21_prev)
+
+    return slope > atr * 0.45
+
+
+# ================= CANDLE =================
 
 def strong_candle(candle):
     body = abs(candle["close"] - candle["open"])
@@ -66,7 +80,7 @@ def strong_candle(candle):
     if full == 0:
         return False
 
-    return (body / full) > 0.55
+    return (body / full) > 0.60
 
 
 def rejection_filter(candle):
@@ -78,40 +92,43 @@ def rejection_filter(candle):
     upper = candle["high"] - max(candle["close"], candle["open"])
     lower = min(candle["close"], candle["open"]) - candle["low"]
 
-    if upper > body * 1.2:
+    if upper > body:
         return False
 
-    if lower > body * 1.2:
+    if lower > body:
         return False
 
     return True
 
 
-# ================= CONTINUATION =================
+# ================= SOBREEXTENSION =================
 
-def continuation(df, direction):
-    if len(df) < 4:
-        return False
+def overextended(df, direction):
+    candles = [df.iloc[-2], df.iloc[-3], df.iloc[-4]]
 
+    if direction == "call":
+        if all(c["close"] > c["open"] for c in candles):
+            return True
+
+    if direction == "put":
+        if all(c["close"] < c["open"] for c in candles):
+            return True
+
+    return False
+
+
+# ================= PULLBACK =================
+
+def pullback(df, direction):
     c1 = df.iloc[-2]
     c2 = df.iloc[-3]
 
     if direction == "call":
-        if (
-            c1["close"] > c1["open"] and
-            c2["close"] > c2["open"] and
-            c1["close"] > c2["close"] and
-            strong_candle(c1)
-        ):
+        if c2["close"] < c2["open"] and c1["close"] > c1["open"]:
             return True
 
     if direction == "put":
-        if (
-            c1["close"] < c1["open"] and
-            c2["close"] < c2["open"] and
-            c1["close"] < c2["close"] and
-            strong_candle(c1)
-        ):
+        if c2["close"] > c2["open"] and c1["close"] < c1["open"]:
             return True
 
     return False
@@ -140,9 +157,6 @@ def support_resistance(df):
 
 
 def near_reversal_zone(df):
-    if len(df) < 30:
-        return False
-
     price = df["close"].iloc[-2]
     atr = df["atr"].iloc[-2]
 
@@ -150,32 +164,17 @@ def near_reversal_zone(df):
         return False
 
     highs, lows = support_resistance(df)
-    zone_distance = atr * 0.4
+    zone = atr * 0.30
 
     for h in highs:
-        if abs(price - h) < zone_distance:
+        if abs(price - h) < zone:
             return True
 
     for l in lows:
-        if abs(price - l) < zone_distance:
+        if abs(price - l) < zone:
             return True
 
     return False
-
-
-# ================= VOLATILITY =================
-
-def volatility_ok(df):
-    if len(df) < 20:
-        return False
-
-    atr = df["atr"].iloc[-2]
-    mean_atr = df["atr"].mean()
-
-    if pd.isna(atr) or pd.isna(mean_atr):
-        return False
-
-    return atr > mean_atr * 0.7
 
 
 # ================= RSI =================
@@ -187,10 +186,10 @@ def rsi_ok(df, direction):
         return False
 
     if direction == "call":
-        return 52 < rsi < 68
+        return 53 < rsi < 64
 
     if direction == "put":
-        return 32 < rsi < 48
+        return 36 < rsi < 47
 
     return False
 
@@ -223,6 +222,9 @@ def pro_signal(df_m1, df_m5):
     if len(df_m1) < 80 or len(df_m5) < 80:
         return None, None
 
+    if not market_strength(df_m5):
+        return None, None
+
     score = 0
 
     direction, trend_score = trend(df_m5)
@@ -232,16 +234,19 @@ def pro_signal(df_m1, df_m5):
 
     score += trend_score
 
-    if volatility_ok(df_m1):
-        score += 1
+    if overextended(df_m1, direction):
+        return None, None
 
-    if continuation(df_m1, direction):
-        score += 1
+    if pullback(df_m1, direction):
+        score += 2
 
     if rsi_ok(df_m1, direction):
         score += 1
 
     candle = df_m1.iloc[-2]
+
+    if strong_candle(candle):
+        score += 1
 
     if rejection_filter(candle):
         score += 1
@@ -251,7 +256,7 @@ def pro_signal(df_m1, df_m5):
     if near_reversal_zone(df_m1):
         score -= 3
 
-    if score >= 5:
-        return direction, 1
+    if score >= 7:
+        return direction, 2
 
     return None, None
