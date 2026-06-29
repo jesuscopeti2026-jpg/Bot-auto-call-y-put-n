@@ -19,9 +19,7 @@ PASSWORD = os.getenv("IQ_PASSWORD")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-USE_DYNAMIC_STAKE = False
-BASE_AMOUNT = 10000
-RISK_PERCENT = 0.02
+BASE_AMOUNT = 10
 MAX_LOSS_STREAK = 3
 TRADE_COOLDOWN = 90
 
@@ -36,11 +34,12 @@ PAIRS = [
 trade_open = False
 last_trade_time = 0
 last_trade_candle = None
-last_trade_pair = None
 loss_streak = 0
 last_balance = None
 BOT_RUNNING = True
 LAST_UPDATE_ID = None
+last_direction = None
+last_pair = None
 last_context = None
 
 # ================= TELEGRAM =================
@@ -87,7 +86,6 @@ def check_telegram():
             elif text == "/start":
                 BOT_RUNNING = True
                 send("🚀 BOT ACTIVADO")
-
     except:
         pass
 
@@ -99,17 +97,17 @@ def connect_iq():
     iq.connect()
 
     if not iq.check_connect():
-        raise Exception("Error conectando")
+        raise Exception("Error conectando a IQ Option")
 
     iq.change_balance("PRACTICE")
     return iq
 
 
 iq = connect_iq()
-send("🔥 BOT MARKET CONTEXT ACTIVO")
+send("🔥 BOT MARKET STRUCTURE ACTIVO")
 
 
-# ================= CSV LOG =================
+# ================= LOG CSV =================
 
 def log_trade(pair, direction, result, pnl, context):
     file_exists = os.path.exists("trades.csv")
@@ -137,16 +135,6 @@ def log_trade(pair, direction, result, pnl, context):
             result,
             pnl
         ])
-
-
-# ================= STAKE =================
-
-def get_trade_amount():
-    if not USE_DYNAMIC_STAKE:
-        return BASE_AMOUNT
-
-    balance = iq.get_balance()
-    return round(balance * RISK_PERCENT, 2)
 
 
 # ================= CANDLES =================
@@ -185,16 +173,16 @@ def wait_candle_open():
 
 def trade(pair, direction, expiration, context):
     global trade_open, last_trade_time
-    global last_balance, last_trade_pair, last_context
+    global last_balance, last_direction
+    global last_pair, last_context
 
     try:
         wait_candle_open()
 
-        amount = get_trade_amount()
         last_balance = iq.get_balance()
 
         status, trade_id = iq.buy(
-            amount,
+            BASE_AMOUNT,
             pair,
             direction,
             expiration
@@ -203,7 +191,8 @@ def trade(pair, direction, expiration, context):
         if status:
             trade_open = True
             last_trade_time = time.time()
-            last_trade_pair = pair
+            last_direction = direction
+            last_pair = pair
             last_context = context
 
             msg = (
@@ -219,7 +208,7 @@ def trade(pair, direction, expiration, context):
         print("Trade error:", e)
 
 
-# ================= RESULTADOS =================
+# ================= RESULTADO =================
 
 def check_result():
     global trade_open, loss_streak
@@ -239,22 +228,22 @@ def check_result():
         if pnl > 0:
             loss_streak = 0
             send(f"✅ WIN +{round(pnl,2)}")
-            log_trade(last_trade_pair, "win", "WIN", pnl, last_context)
+            log_trade(last_pair, last_direction, "WIN", pnl, last_context)
 
         elif pnl < 0:
             loss_streak += 1
             send(f"❌ LOSS {round(pnl,2)} | Racha {loss_streak}")
-            log_trade(last_trade_pair, "loss", "LOSS", pnl, last_context)
+            log_trade(last_pair, last_direction, "LOSS", pnl, last_context)
 
         else:
             send("⚪ EMPATE")
-            log_trade(last_trade_pair, "draw", "DRAW", pnl, last_context)
+            log_trade(last_pair, last_direction, "DRAW", pnl, last_context)
 
     except:
         trade_open = False
 
 
-# ================= LOOP =================
+# ================= LOOP PRINCIPAL =================
 
 while True:
     try:
