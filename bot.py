@@ -18,17 +18,14 @@ PASSWORD = os.getenv("IQ_PASSWORD")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-TIMEFRAME = 60
-EXPIRATION = 1
 BASE_AMOUNT = 10000
 MAX_LOSS_STREAK = 3
 
+# Menos pares = más calidad
 PAIRS = [
     "EURUSD-OTC",
     "GBPUSD-OTC",
-    "EURJPY-OTC",
-    "USDCHF-OTC",
-    "AUDCAD-OTC"
+    "EURJPY-OTC"
 ]
 
 # ================= ESTADO =================
@@ -96,16 +93,15 @@ def connect_iq():
     iq.connect()
 
     if not iq.check_connect():
-        raise Exception("Error conectando a IQ Option")
+        raise Exception("Error conectando")
 
     iq.change_balance("PRACTICE")
     return iq
 
 
 iq = connect_iq()
+send("🔥 BOT CONSERVADOR ACTIVO")
 
-print("🔥 BOT PRO ACTIVO")
-send("🔥 BOT PRO ACTIVO")
 
 # ================= CANDLES =================
 
@@ -119,8 +115,7 @@ def get_candles(pair, tf):
         df = pd.DataFrame(data)
         df.rename(columns={"max": "high", "min": "low"}, inplace=True)
 
-        df = add_indicators(df)
-        return df
+        return add_indicators(df)
 
     except:
         return None
@@ -131,10 +126,10 @@ def get_candles(pair, tf):
 def wait_candle_open():
     while True:
         server_time = iq.get_server_timestamp()
-        seconds = int(server_time) % 60
-        milliseconds = server_time - int(server_time)
+        sec = int(server_time) % 60
+        ms = server_time - int(server_time)
 
-        if seconds == 0 and milliseconds < 0.30:
+        if sec == 0 and ms < 0.30:
             return
 
         time.sleep(0.02)
@@ -142,7 +137,7 @@ def wait_candle_open():
 
 # ================= TRADE =================
 
-def trade(pair, direction):
+def trade(pair, direction, expiration):
     global trade_open, last_trade_time, last_balance
 
     try:
@@ -154,14 +149,14 @@ def trade(pair, direction):
             BASE_AMOUNT,
             pair,
             direction,
-            EXPIRATION
+            expiration
         )
 
         if status:
             trade_open = True
             last_trade_time = time.time()
 
-            msg = f"🎯 {pair} {direction.upper()}"
+            msg = f"🎯 {pair} {direction.upper()} | {expiration}m"
             print(msg)
             send(msg)
 
@@ -169,18 +164,18 @@ def trade(pair, direction):
         print("Trade error:", e)
 
 
-# ================= RESULTADO =================
+# ================= RESULTADOS =================
 
 def check_result():
-    global trade_open, loss_streak, last_balance
+    global trade_open, loss_streak
+
+    if not trade_open:
+        return
+
+    if time.time() - last_trade_time < 140:
+        return
 
     try:
-        if not trade_open:
-            return
-
-        if time.time() - last_trade_time < 70:
-            return
-
         current_balance = iq.get_balance()
         pnl = current_balance - last_balance
 
@@ -192,7 +187,7 @@ def check_result():
 
         elif pnl < 0:
             loss_streak += 1
-            send(f"❌ LOSS {round(pnl, 2)} | Racha: {loss_streak}")
+            send(f"❌ LOSS {round(pnl, 2)} | Racha {loss_streak}")
 
         else:
             send("⚪ EMPATE")
@@ -236,11 +231,11 @@ while True:
             if signal:
                 if loss_streak >= MAX_LOSS_STREAK:
                     send("🛑 STOP POR RACHAS")
-                    time.sleep(120)
+                    time.sleep(300)
                     loss_streak = 0
                     break
 
-                trade(pair, signal)
+                trade(pair, signal, expiration)
                 last_trade_candle = current_candle
                 break
 
@@ -251,7 +246,7 @@ while True:
 
         try:
             iq = connect_iq()
-            send("♻️ Reconectado a IQ Option")
+            send("♻️ Reconectado")
         except:
             pass
 
