@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-# ================= INDICADORES BASE =================
+# ================= INDICADORES =================
 
 def add_indicators(df):
     df = df.copy()
@@ -16,7 +16,7 @@ def add_indicators(df):
     return df
 
 
-# ================= CANDLE READER =================
+# ================= CANDLE =================
 
 def classify_candle(candle):
     body = abs(candle["close"] - candle["open"])
@@ -58,26 +58,25 @@ def detect_structure(df):
     highs = df["high"].tail(8).tolist()
     lows = df["low"].tail(8).tolist()
 
-    higher_highs = 0
-    lower_lows = 0
+    hh = 0
+    ll = 0
 
     for i in range(1, len(highs)):
-        if highs[i] > highs[i - 1]:
-            higher_highs += 1
+        if highs[i] > highs[i-1]:
+            hh += 1
+        if lows[i] < lows[i-1]:
+            ll += 1
 
-        if lows[i] < lows[i - 1]:
-            lower_lows += 1
-
-    if higher_highs >= 5:
+    if hh >= 5:
         return "bullish"
 
-    if lower_lows >= 5:
+    if ll >= 5:
         return "bearish"
 
     return "range"
 
 
-# ================= SEQUENCE ANALYZER =================
+# ================= SEQUENCE =================
 
 def analyze_sequence(df):
     seq = []
@@ -85,20 +84,16 @@ def analyze_sequence(df):
     for i in range(-6, -1):
         seq.append(classify_candle(df.iloc[i]))
 
-    bullish_count = sum("bullish" in s for s in seq)
-    bearish_count = sum("bearish" in s for s in seq)
-    doji_count = sum(s == "doji" for s in seq)
+    bullish = sum("bullish" in s for s in seq)
+    bearish = sum("bearish" in s for s in seq)
 
-    if bullish_count >= 3 and bearish_count <= 1:
-        return "buyers_control"
+    if bullish > bearish:
+        return "buyers"
 
-    if bearish_count >= 3 and bullish_count <= 1:
-        return "sellers_control"
+    if bearish > bullish:
+        return "sellers"
 
-    if doji_count >= 2:
-        return "indecision"
-
-    return "mixed"
+    return "balanced"
 
 
 # ================= REJECTION =================
@@ -115,97 +110,48 @@ def detect_rejection(df):
     return None
 
 
-# ================= MOMENTUM LOSS =================
-
-def momentum_exhaustion(df):
-    bodies = []
-
-    for i in [-4, -3, -2]:
-        c = df.iloc[i]
-        bodies.append(abs(c["close"] - c["open"]))
-
-    if bodies[0] > bodies[1] > bodies[2]:
-        return True
-
-    return False
-
-
-# ================= BREAK CONFIRM =================
+# ================= BREAK =================
 
 def confirm_break(df, direction):
-    current = df.iloc[-2]
-    previous = df.iloc[-3]
+    c1 = df.iloc[-2]
+    c2 = df.iloc[-3]
 
     if direction == "call":
-        return current["close"] > previous["high"]
+        return c1["close"] > c2["high"]
 
     if direction == "put":
-        return current["close"] < previous["low"]
+        return c1["close"] < c2["low"]
 
     return False
 
 
-# ================= VOLATILITY FILTER =================
-
-def volatility_ok(df):
-    atr = df["atr"].iloc[-2]
-
-    if pd.isna(atr):
-        return False
-
-    avg_range = (df["high"] - df["low"]).tail(20).mean()
-
-    return avg_range > atr * 0.7
-
-
-# ================= MAIN SIGNAL =================
+# ================= SIGNAL =================
 
 def pro_signal(df_m1, df_m5):
     if len(df_m1) < 50:
         return None, None, None
 
-    if not volatility_ok(df_m1):
+    structure = detect_structure(df_m1)
+
+    # SOLO RANGE
+    if structure != "range":
         return None, None, None
 
-    structure = detect_structure(df_m1)
     sequence = analyze_sequence(df_m1)
     rejection = detect_rejection(df_m1)
-    exhausted = momentum_exhaustion(df_m1)
 
     score = 0
     signal = None
 
-    # CALL setup
-    if structure == "bullish":
+    if structure == "range":
         score += 2
 
-    if sequence == "buyers_control":
-        score += 2
-
-    if rejection == "call":
-        score += 3
-        signal = "call"
-
-    # PUT setup
-    if structure == "bearish":
-        score += 2
-
-    if sequence == "sellers_control":
-        score += 2
-
-    if rejection == "put":
-        score += 3
-        signal = "put"
-
-    if exhausted:
+    if sequence == "balanced":
         score += 1
 
-    if signal is None:
-        if structure == "bullish" and sequence == "buyers_control":
-            signal = "call"
-
-        elif structure == "bearish" and sequence == "sellers_control":
-            signal = "put"
+    if rejection:
+        score += 2
+        signal = rejection
 
     if signal is None:
         return None, None, None
@@ -215,13 +161,10 @@ def pro_signal(df_m1, df_m5):
 
     context = {
         "score": score,
-        "structure": structure,
-        "sequence": sequence,
-        "rejection": rejection,
-        "exhausted": exhausted
+        "structure": structure
     }
 
-    if score >= 5:
+    if score == 5:
         return signal, 1, context
 
     return None, None, None
