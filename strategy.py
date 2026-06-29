@@ -6,21 +6,18 @@ import numpy as np
 def add_indicators(df):
     df = df.copy()
 
-    # EMAs
     df["ema9"] = df["close"].ewm(span=9).mean()
     df["ema21"] = df["close"].ewm(span=21).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
-    # ATR
     high_low = df["high"] - df["low"]
     high_close = abs(df["high"] - df["close"].shift())
     low_close = abs(df["low"] - df["close"].shift())
 
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = ranges.max(axis=1)
-    df["atr"] = true_range.rolling(14).mean()
+    tr = ranges.max(axis=1)
+    df["atr"] = tr.rolling(14).mean()
 
-    # RSI
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -34,114 +31,70 @@ def add_indicators(df):
     return df
 
 
-# ================= TENDENCIA =================
+# ================= TREND =================
 
 def trend(df):
-    if len(df) < 60:
-        return None, 0
-
     e9 = df["ema9"].iloc[-2]
     e21 = df["ema21"].iloc[-2]
     e50 = df["ema50"].iloc[-2]
 
     if pd.isna(e9) or pd.isna(e21) or pd.isna(e50):
-        return None, 0
+        return None
 
     if e9 > e21 > e50:
-        return "call", 2
+        return "call"
 
     if e9 < e21 < e50:
-        return "put", 2
+        return "put"
 
-    return None, 0
-
-
-# ================= MERCADO LATERAL =================
-
-def market_strength(df):
-    e21_now = df["ema21"].iloc[-2]
-    e21_prev = df["ema21"].iloc[-7]
-    atr = df["atr"].iloc[-2]
-
-    if pd.isna(atr):
-        return False
-
-    slope = abs(e21_now - e21_prev)
-
-    return slope > atr * 0.45
+    return None
 
 
-# ================= CANDLE =================
+# ================= MARKET STRUCTURE =================
 
-def strong_candle(candle):
-    body = abs(candle["close"] - candle["open"])
-    full = candle["high"] - candle["low"]
+def market_structure(df):
+    highs = df["high"].tail(8).values
+    lows = df["low"].tail(8).values
 
-    if full == 0:
-        return False
+    if len(highs) < 4:
+        return None
 
-    return (body / full) > 0.60
+    if highs[-1] > highs[-3] and lows[-1] > lows[-3]:
+        return "bullish"
 
+    if highs[-1] < highs[-3] and lows[-1] < lows[-3]:
+        return "bearish"
 
-def rejection_filter(candle):
-    body = abs(candle["close"] - candle["open"])
-
-    if body == 0:
-        return False
-
-    upper = candle["high"] - max(candle["close"], candle["open"])
-    lower = min(candle["close"], candle["open"]) - candle["low"]
-
-    if upper > body:
-        return False
-
-    if lower > body:
-        return False
-
-    return True
+    return "range"
 
 
-# ================= SOBREEXTENSION =================
+# ================= ZONE CLUSTER =================
 
-def overextended(df, direction):
-    candles = [df.iloc[-2], df.iloc[-3], df.iloc[-4]]
+def build_zones(levels, atr):
+    zones = []
 
-    if direction == "call":
-        if all(c["close"] > c["open"] for c in candles):
-            return True
+    for level in levels:
+        merged = False
 
-    if direction == "put":
-        if all(c["close"] < c["open"] for c in candles):
-            return True
+        for z in zones:
+            if abs(level - z["price"]) < atr * 0.35:
+                z["touches"] += 1
+                z["price"] = (z["price"] + level) / 2
+                merged = True
+                break
 
-    return False
+        if not merged:
+            zones.append({
+                "price": level,
+                "touches": 1
+            })
 
+    return zones
 
-# ================= PULLBACK =================
-
-def pullback(df, direction):
-    c1 = df.iloc[-2]
-    c2 = df.iloc[-3]
-
-    if direction == "call":
-        if c2["close"] < c2["open"] and c1["close"] > c1["open"]:
-            return True
-
-    if direction == "put":
-        if c2["close"] > c2["open"] and c1["close"] < c1["open"]:
-            return True
-
-    return False
-
-
-# ================= SOPORTE / RESISTENCIA =================
 
 def support_resistance(df):
     highs = []
     lows = []
-
-    if len(df) < 30:
-        return highs, lows
 
     for i in range(10, len(df) - 10):
         high = df["high"].iloc[i]
@@ -153,28 +106,93 @@ def support_resistance(df):
         if low == min(df["low"].iloc[i-5:i+5]):
             lows.append(low)
 
-    return highs, lows
+    atr = df["atr"].iloc[-2]
+
+    if pd.isna(atr):
+        return [], []
+
+    return build_zones(highs, atr), build_zones(lows, atr)
 
 
-def near_reversal_zone(df):
+# ================= ZONE CONTEXT =================
+
+def nearest_zone(df):
     price = df["close"].iloc[-2]
     atr = df["atr"].iloc[-2]
 
     if pd.isna(atr):
-        return False
+        return None
 
-    highs, lows = support_resistance(df)
-    zone = atr * 0.30
+    resistances, supports = support_resistance(df)
 
-    for h in highs:
-        if abs(price - h) < zone:
-            return True
+    nearest = None
+    nearest_dist = 999999
 
-    for l in lows:
-        if abs(price - l) < zone:
-            return True
+    for z in resistances:
+        dist = abs(price - z["price"])
+        if dist < nearest_dist:
+            nearest = ("resistance", z)
+            nearest_dist = dist
+
+    for z in supports:
+        dist = abs(price - z["price"])
+        if dist < nearest_dist:
+            nearest = ("support", z)
+            nearest_dist = dist
+
+    if nearest and nearest_dist < atr:
+        return nearest
+
+    return None
+
+
+# ================= LIQUIDITY SWEEP =================
+
+def liquidity_sweep(df):
+    zone = nearest_zone(df)
+
+    if zone is None:
+        return None
+
+    zone_type, z = zone
+    candle = df.iloc[-2]
+
+    if zone_type == "support":
+        if candle["low"] < z["price"] and candle["close"] > z["price"]:
+            return "bullish"
+
+    if zone_type == "resistance":
+        if candle["high"] > z["price"] and candle["close"] < z["price"]:
+            return "bearish"
+
+    return None
+
+
+# ================= PULLBACK =================
+
+def pullback(df, direction):
+    c1 = df.iloc[-2]
+    c2 = df.iloc[-3]
+
+    if direction == "call":
+        return c2["close"] < c2["open"] and c1["close"] > c1["open"]
+
+    if direction == "put":
+        return c2["close"] > c2["open"] and c1["close"] < c1["open"]
 
     return False
+
+
+# ================= STRONG CANDLE =================
+
+def strong_candle(candle):
+    body = abs(candle["close"] - candle["open"])
+    full = candle["high"] - candle["low"]
+
+    if full == 0:
+        return False
+
+    return body / full > 0.6
 
 
 # ================= RSI =================
@@ -186,56 +204,44 @@ def rsi_ok(df, direction):
         return False
 
     if direction == "call":
-        return 53 < rsi < 64
+        return 50 < rsi < 67
 
     if direction == "put":
-        return 36 < rsi < 47
+        return 33 < rsi < 50
 
     return False
-
-
-# ================= MOMENTUM =================
-
-def momentum_score(df):
-    c1 = df.iloc[-2]
-    c2 = df.iloc[-3]
-
-    score = 0
-
-    body1 = abs(c1["close"] - c1["open"])
-    body2 = abs(c2["close"] - c2["open"])
-
-    avg_body = abs(df["close"] - df["open"]).tail(20).mean()
-
-    if body1 > avg_body:
-        score += 1
-
-    if body2 > avg_body:
-        score += 1
-
-    return score
 
 
 # ================= SIGNAL =================
 
 def pro_signal(df_m1, df_m5):
     if len(df_m1) < 80 or len(df_m5) < 80:
-        return None, None
-
-    if not market_strength(df_m5):
-        return None, None
+        return None, None, None
 
     score = 0
 
-    direction, trend_score = trend(df_m5)
+    direction = trend(df_m5)
 
     if direction is None:
-        return None, None
+        return None, None, None
 
-    score += trend_score
+    score += 2
 
-    if overextended(df_m1, direction):
-        return None, None
+    structure = market_structure(df_m5)
+
+    if structure == "bullish" and direction == "call":
+        score += 2
+
+    if structure == "bearish" and direction == "put":
+        score += 2
+
+    sweep = liquidity_sweep(df_m1)
+
+    if sweep == "bullish" and direction == "call":
+        score += 2
+
+    if sweep == "bearish" and direction == "put":
+        score += 2
 
     if pullback(df_m1, direction):
         score += 2
@@ -248,15 +254,24 @@ def pro_signal(df_m1, df_m5):
     if strong_candle(candle):
         score += 1
 
-    if rejection_filter(candle):
-        score += 1
+    zone = nearest_zone(df_m1)
 
-    score += momentum_score(df_m1)
+    if zone:
+        zone_type, z = zone
 
-    if near_reversal_zone(df_m1):
-        score -= 3
+        if z["touches"] >= 4:
+            if direction == "put" and zone_type == "support":
+                score -= 4
 
-    if score >= 7:
-        return direction, 2
+            if direction == "call" and zone_type == "resistance":
+                score -= 4
 
-    return None, None
+    context = {
+        "score": score,
+        "structure": structure
+    }
+
+    if score >= 8:
+        return direction, 2, context
+
+    return None, None, context
