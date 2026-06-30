@@ -21,7 +21,6 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 BASE_AMOUNT = 10
 MAX_LOSS_STREAK = 3
-EXPIRATION = 1
 
 PAIRS = [
     "EURUSD-OTC",
@@ -49,10 +48,7 @@ def send(msg):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            data={
-                "chat_id": CHAT_ID,
-                "text": msg
-            },
+            data={"chat_id": CHAT_ID, "text": msg},
             timeout=5
         )
     except:
@@ -94,6 +90,7 @@ def check_telegram():
     except:
         pass
 
+
 # ================= IQ OPTION =================
 
 def connect_iq():
@@ -101,14 +98,15 @@ def connect_iq():
     iq.connect()
 
     if not iq.check_connect():
-        raise Exception("No conecta a IQ Option")
+        raise Exception("Error conectando a IQ Option")
 
     iq.change_balance("PRACTICE")
     return iq
 
 
 iq = connect_iq()
-send("🔥 BOT ZONE STRUCTURE ACTIVO")
+send("🔥 BOT V5 ACTIVO")
+
 
 # ================= CSV =================
 
@@ -123,8 +121,10 @@ def log_trade(pair, direction, result, pnl, context):
                 "timestamp",
                 "pair",
                 "direction",
-                "structure",
+                "trend",
                 "pattern",
+                "score",
+                "reversal",
                 "result",
                 "pnl"
             ])
@@ -133,11 +133,14 @@ def log_trade(pair, direction, result, pnl, context):
             int(time.time()),
             pair,
             direction,
-            context.get("structure"),
+            context.get("trend"),
             context.get("pattern"),
+            context.get("score"),
+            context.get("reversal"),
             result,
             pnl
         ])
+
 
 # ================= CANDLES =================
 
@@ -156,6 +159,7 @@ def get_candles(pair, tf):
     except:
         return None
 
+
 # ================= TIMING =================
 
 def wait_new_candle():
@@ -164,10 +168,11 @@ def wait_new_candle():
         sec = int(server_time) % 60
         ms = server_time - int(server_time)
 
-        if sec == 0 and ms < 0.25:
+        if sec == 0 and ms < 0.20:
             return
 
         time.sleep(0.01)
+
 
 # ================= TRADE =================
 
@@ -200,8 +205,10 @@ def trade(pair, direction, expiration, context):
 
             msg = (
                 f"🎯 {pair} {direction.upper()} {expiration}m\n"
-                f"Structure: {context['structure']}\n"
-                f"Pattern: {context['pattern']}"
+                f"Trend: {context['trend']}\n"
+                f"Pattern: {context['pattern']}\n"
+                f"Score: {context['score']}\n"
+                f"Reversal: {context['reversal']}"
             )
 
             print(msg)
@@ -209,6 +216,7 @@ def trade(pair, direction, expiration, context):
 
     except Exception as e:
         print("Trade error:", e)
+
 
 # ================= RESULT =================
 
@@ -245,6 +253,7 @@ def check_result():
     except:
         trade_open = False
 
+
 # ================= LOOP =================
 
 while True:
@@ -270,12 +279,11 @@ while True:
         server_time = int(iq.get_server_timestamp())
         current_candle = server_time // 60
 
-        # Solo procesar una vez por vela
         if current_candle == last_processed_candle:
             time.sleep(0.2)
             continue
 
-        # Esperar cierre real de vela anterior
+        # Esperar a que cierre la vela anterior
         if server_time % 60 != 1:
             time.sleep(0.05)
             continue
