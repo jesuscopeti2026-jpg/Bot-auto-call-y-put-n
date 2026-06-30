@@ -10,70 +10,72 @@ def add_indicators(df):
     high_close = abs(df["high"] - df["close"].shift())
     low_close = abs(df["low"] - df["close"].shift())
 
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    df["atr"] = ranges.max(axis=1).rolling(14).mean()
+    tr = pd.concat([high_low, high_close, low_close], axis=1)
+    df["atr"] = tr.max(axis=1).rolling(14).mean()
 
     return df
 
 
-# ================= HELPERS =================
+# ================= CANDLE HELPERS =================
 
-def candle_strength(c):
+def candle_stats(c):
     body = abs(c["close"] - c["open"])
     total = c["high"] - c["low"]
 
     if total == 0:
-        return 0
+        return {
+            "body": 0,
+            "ratio": 0,
+            "upper": 0,
+            "lower": 0,
+            "dir": "neutral"
+        }
 
-    return body / total
+    upper = c["high"] - max(c["open"], c["close"])
+    lower = min(c["open"], c["close"]) - c["low"]
 
-
-def candle_direction(c):
     if c["close"] > c["open"]:
-        return "bull"
+        direction = "bull"
     elif c["close"] < c["open"]:
-        return "bear"
-    return "neutral"
+        direction = "bear"
+    else:
+        direction = "neutral"
+
+    return {
+        "body": body,
+        "ratio": body / total,
+        "upper": upper,
+        "lower": lower,
+        "dir": direction
+    }
 
 
-def rejection(c):
-    body = abs(c["close"] - c["open"])
+# ================= TREND / STRUCTURE =================
 
-    if body == 0:
-        return None
-
-    upper = c["high"] - max(c["close"], c["open"])
-    lower = min(c["close"], c["open"]) - c["low"]
-
-    if upper > body * 1.5:
-        return "upper"
-
-    if lower > body * 1.5:
-        return "lower"
-
-    return None
-
-
-# ================= STRUCTURE =================
-
-def detect_structure(df):
-    highs = df["high"].tail(10).tolist()
-    lows = df["low"].tail(10).tolist()
+def detect_trend(df):
+    highs = df["high"].tail(12).tolist()
+    lows = df["low"].tail(12).tolist()
 
     hh = 0
+    hl = 0
+    lh = 0
     ll = 0
 
     for i in range(1, len(highs)):
-        if highs[i] > highs[i - 1]:
+        if highs[i] > highs[i-1]:
             hh += 1
+        else:
+            lh += 1
 
-        if lows[i] < lows[i - 1]:
+        if lows[i] > lows[i-1]:
+            hl += 1
+        else:
             ll += 1
 
-    if hh >= 6:
+    if hh >= 7 and hl >= 7:
         return "bullish"
 
-    if ll >= 6:
+    if lh >= 7 and ll >= 7:
         return "bearish"
 
     return "range"
@@ -81,126 +83,137 @@ def detect_structure(df):
 
 # ================= ZONES =================
 
-def support_resistance(df):
-    high = df["high"].tail(15).max()
-    low = df["low"].tail(15).min()
-    return high, low
+def detect_zones(df):
+    resistance = df["high"].tail(20).max()
+    support = df["low"].tail(20).min()
+    return resistance, support
 
 
-# ================= REVERSAL =================
+def near_zone(price, zone, atr):
+    if pd.isna(atr):
+        return False
 
-def reversal_signal(df):
-    resistance, support = support_resistance(df)
+    distance = abs(price - zone)
+    return distance <= atr * 0.4
 
+
+# ================= REVERSAL POINT =================
+
+def reversal_point(df):
     c = df.iloc[-2]
-    rej = rejection(c)
-    zone_size = (resistance - support) * 0.15
+    stats = candle_stats(c)
 
-    # Reversal SELL
-    if abs(c["high"] - resistance) <= zone_size:
-        if rej == "upper":
-            if candle_direction(c) == "bear":
-                return "put", "reversal"
+    resistance, support = detect_zones(df)
+    atr = df["atr"].iloc[-2]
 
-    # Reversal BUY
-    if abs(c["low"] - support) <= zone_size:
-        if rej == "lower":
-            if candle_direction(c) == "bull":
-                return "call", "reversal"
+    if near_zone(c["high"], resistance, atr):
+        if stats["upper"] > stats["body"] * 1.5:
+            return "sell_reversal"
 
-    return None, None
+    if near_zone(c["low"], support, atr):
+        if stats["lower"] > stats["body"] * 1.5:
+            return "buy_reversal"
+
+    return None
 
 
-# ================= BREAKOUT =================
+# ================= TWO-CANDLE READER =================
 
-def breakout_signal(df):
-    resistance, support = support_resistance(df)
-    c = df.iloc[-2]
-
-    strength = candle_strength(c)
-
-    if strength < 0.60:
-        return None, None
-
-    if c["close"] > resistance:
-        return "call", "breakout"
-
-    if c["close"] < support:
-        return "put", "breakout"
-
-    return None, None
-
-
-# ================= FAKE BREAKOUT =================
-
-def fake_breakout_signal(df):
-    resistance, support = support_resistance(df)
-    c = df.iloc[-2]
-
-    # rompió arriba y cerró dentro
-    if c["high"] > resistance and c["close"] < resistance:
-        return "put", "fake_breakout"
-
-    # rompió abajo y cerró dentro
-    if c["low"] < support and c["close"] > support:
-        return "call", "fake_breakout"
-
-    return None, None
-
-
-# ================= CONTINUATION =================
-
-def continuation_signal(df):
-    structure = detect_structure(df)
-
+def read_two_candles(df):
     prev = df.iloc[-3]
     curr = df.iloc[-2]
 
-    prev_dir = candle_direction(prev)
-    curr_dir = candle_direction(curr)
+    p = candle_stats(prev)
+    c = candle_stats(curr)
 
-    # Bull continuation
-    if structure == "bullish":
-        if prev_dir == "bear" and curr_dir == "bull":
-            if curr["close"] > prev["high"]:
-                return "call", "continuation"
+    # BUY continuation / reversal
+    if c["dir"] == "bull":
+        if curr["close"] > prev["high"]:
+            if c["ratio"] > 0.55:
+                return "call", "bull_break"
 
-    # Bear continuation
-    if structure == "bearish":
-        if prev_dir == "bull" and curr_dir == "bear":
-            if curr["close"] < prev["low"]:
-                return "put", "continuation"
+        if p["dir"] == "bear":
+            if c["ratio"] > p["ratio"]:
+                return "call", "bull_absorption"
+
+    # SELL continuation / reversal
+    if c["dir"] == "bear":
+        if curr["close"] < prev["low"]:
+            if c["ratio"] > 0.55:
+                return "put", "bear_break"
+
+        if p["dir"] == "bull":
+            if c["ratio"] > p["ratio"]:
+                return "put", "bear_absorption"
 
     return None, None
+
+
+# ================= SCORING =================
+
+def build_score(df, trend, signal, pattern):
+    score = 0
+
+    if trend != "range":
+        score += 2
+
+    reversal = reversal_point(df)
+
+    if reversal:
+        score += 3
+
+    curr = candle_stats(df.iloc[-2])
+
+    if curr["ratio"] > 0.60:
+        score += 2
+
+    if "break" in pattern:
+        score += 2
+
+    if "absorption" in pattern:
+        score += 3
+
+    if trend == "bullish" and signal == "call":
+        score += 2
+
+    if trend == "bearish" and signal == "put":
+        score += 2
+
+    return score
 
 
 # ================= MAIN SIGNAL =================
 
 def pro_signal(df_m1, df_m5):
-    if len(df_m1) < 30:
+    if len(df_m1) < 50:
         return None, None, None
 
-    structure = detect_structure(df_m1)
+    trend = detect_trend(df_m1)
 
-    signal = None
-    pattern = None
+    signal, pattern = read_two_candles(df_m1)
 
-    detectors = [
-        fake_breakout_signal,
-        reversal_signal,
-        breakout_signal,
-        continuation_signal
-    ]
+    if signal is None:
+        return None, None, None
 
-    for detector in detectors:
-        signal, pattern = detector(df_m1)
+    reversal = reversal_point(df_m1)
 
-        if signal:
-            context = {
-                "structure": structure,
-                "pattern": pattern
-            }
+    if reversal == "buy_reversal" and signal != "call":
+        return None, None, None
 
-            return signal, 1, context
+    if reversal == "sell_reversal" and signal != "put":
+        return None, None, None
 
-    return None, None, None
+    score = build_score(df_m1, trend, signal, pattern)
+
+    # SOLO SETUPS DE ALTA PRECISION
+    if score < 8:
+        return None, None, None
+
+    context = {
+        "trend": trend,
+        "pattern": pattern,
+        "score": score,
+        "reversal": reversal
+    }
+
+    return signal, 1, context
