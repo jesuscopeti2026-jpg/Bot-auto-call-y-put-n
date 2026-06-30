@@ -1,12 +1,60 @@
 import pandas as pd
+import numpy as np
 
 # ================= BASE =================
 
 def add_indicators(df):
-    return df.copy()
+    df = df.copy()
+
+    high_low = df["high"] - df["low"]
+    high_close = abs(df["high"] - df["close"].shift())
+    low_close = abs(df["low"] - df["close"].shift())
+
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    df["atr"] = ranges.max(axis=1).rolling(14).mean()
+
+    return df
 
 
-# ================= ESTRUCTURA =================
+# ================= HELPERS =================
+
+def candle_strength(c):
+    body = abs(c["close"] - c["open"])
+    total = c["high"] - c["low"]
+
+    if total == 0:
+        return 0
+
+    return body / total
+
+
+def candle_direction(c):
+    if c["close"] > c["open"]:
+        return "bull"
+    elif c["close"] < c["open"]:
+        return "bear"
+    return "neutral"
+
+
+def rejection(c):
+    body = abs(c["close"] - c["open"])
+
+    if body == 0:
+        return None
+
+    upper = c["high"] - max(c["close"], c["open"])
+    lower = min(c["close"], c["open"]) - c["low"]
+
+    if upper > body * 1.5:
+        return "upper"
+
+    if lower > body * 1.5:
+        return "lower"
+
+    return None
+
+
+# ================= STRUCTURE =================
 
 def detect_structure(df):
     highs = df["high"].tail(10).tolist()
@@ -31,113 +79,128 @@ def detect_structure(df):
     return "range"
 
 
-# ================= ZONAS =================
+# ================= ZONES =================
 
-def detect_zone(df):
-    recent_high = df["high"].tail(8).max()
-    recent_low = df["low"].tail(8).min()
-    current = df["close"].iloc[-2]
-
-    zone_size = (recent_high - recent_low) * 0.25
-
-    if current >= recent_high - zone_size:
-        return "resistance"
-
-    if current <= recent_low + zone_size:
-        return "support"
-
-    return "middle"
+def support_resistance(df):
+    high = df["high"].tail(15).max()
+    low = df["low"].tail(15).min()
+    return high, low
 
 
-# ================= FUERZA DE VELA =================
+# ================= REVERSAL =================
 
-def candle_strength(candle):
-    body = abs(candle["close"] - candle["open"])
-    total = candle["high"] - candle["low"]
+def reversal_signal(df):
+    resistance, support = support_resistance(df)
 
-    if total == 0:
-        return 0
+    c = df.iloc[-2]
+    rej = rejection(c)
+    zone_size = (resistance - support) * 0.15
 
-    return body / total
+    # Reversal SELL
+    if abs(c["high"] - resistance) <= zone_size:
+        if rej == "upper":
+            if candle_direction(c) == "bear":
+                return "put", "reversal"
 
-
-# ================= ANALISIS DE 2 VELAS =================
-
-def candle_reader(df):
-    prev = df.iloc[-3]
-    curr = df.iloc[-2]
-
-    prev_bull = prev["close"] > prev["open"]
-    curr_bull = curr["close"] > curr["open"]
-
-    prev_strength = candle_strength(prev)
-    curr_strength = candle_strength(curr)
-
-    # BUY
-    if curr_bull:
-        if curr["close"] > prev["high"]:
-            if curr_strength > prev_strength:
-                return "call", "bull_break"
-
-        if (not prev_bull) and curr_bull:
-            if curr_strength > 0.55:
-                return "call", "bull_reversal"
-
-    # SELL
-    if not curr_bull:
-        if curr["close"] < prev["low"]:
-            if curr_strength > prev_strength:
-                return "put", "bear_break"
-
-        if prev_bull and (not curr_bull):
-            if curr_strength > 0.55:
-                return "put", "bear_reversal"
+    # Reversal BUY
+    if abs(c["low"] - support) <= zone_size:
+        if rej == "lower":
+            if candle_direction(c) == "bull":
+                return "call", "reversal"
 
     return None, None
 
 
-# ================= FILTRO POR ZONA =================
+# ================= BREAKOUT =================
 
-def zone_filter(signal, zone):
-    if signal == "call":
-        if zone == "resistance":
-            return False
+def breakout_signal(df):
+    resistance, support = support_resistance(df)
+    c = df.iloc[-2]
 
-    if signal == "put":
-        if zone == "support":
-            return False
+    strength = candle_strength(c)
 
-    return True
+    if strength < 0.60:
+        return None, None
+
+    if c["close"] > resistance:
+        return "call", "breakout"
+
+    if c["close"] < support:
+        return "put", "breakout"
+
+    return None, None
 
 
-# ================= SIGNAL =================
+# ================= FAKE BREAKOUT =================
+
+def fake_breakout_signal(df):
+    resistance, support = support_resistance(df)
+    c = df.iloc[-2]
+
+    # rompió arriba y cerró dentro
+    if c["high"] > resistance and c["close"] < resistance:
+        return "put", "fake_breakout"
+
+    # rompió abajo y cerró dentro
+    if c["low"] < support and c["close"] > support:
+        return "call", "fake_breakout"
+
+    return None, None
+
+
+# ================= CONTINUATION =================
+
+def continuation_signal(df):
+    structure = detect_structure(df)
+
+    prev = df.iloc[-3]
+    curr = df.iloc[-2]
+
+    prev_dir = candle_direction(prev)
+    curr_dir = candle_direction(curr)
+
+    # Bull continuation
+    if structure == "bullish":
+        if prev_dir == "bear" and curr_dir == "bull":
+            if curr["close"] > prev["high"]:
+                return "call", "continuation"
+
+    # Bear continuation
+    if structure == "bearish":
+        if prev_dir == "bull" and curr_dir == "bear":
+            if curr["close"] < prev["low"]:
+                return "put", "continuation"
+
+    return None, None
+
+
+# ================= MAIN SIGNAL =================
 
 def pro_signal(df_m1, df_m5):
-    if len(df_m1) < 20:
+    if len(df_m1) < 30:
         return None, None, None
 
     structure = detect_structure(df_m1)
-    zone = detect_zone(df_m1)
 
-    signal, pattern = candle_reader(df_m1)
+    signal = None
+    pattern = None
 
-    if signal is None:
-        return None, None, None
+    detectors = [
+        fake_breakout_signal,
+        reversal_signal,
+        breakout_signal,
+        continuation_signal
+    ]
 
-    if not zone_filter(signal, zone):
-        return None, None, None
+    for detector in detectors:
+        signal, pattern = detector(df_m1)
 
-    # Operar a favor de estructura
-    if structure == "bullish" and signal != "call":
-        return None, None, None
+        if signal:
+            context = {
+                "structure": structure,
+                "pattern": pattern
+            }
 
-    if structure == "bearish" and signal != "put":
-        return None, None, None
+            return signal, 1, context
 
-    context = {
-        "structure": structure,
-        "zone": zone,
-        "pattern": pattern
-    }
-
-    return signal, 1, context
+    return None, None, None
