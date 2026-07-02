@@ -19,8 +19,9 @@ PASSWORD = os.getenv("IQ_PASSWORD")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-BASE_AMOUNT = 10
+BASE_AMOUNT = 3.33
 MAX_LOSS_STREAK = 3
+TRADE_COOLDOWN = 60
 
 PAIRS = [
     "EURUSD-OTC",
@@ -32,15 +33,15 @@ PAIRS = [
 
 trade_open = False
 last_trade_time = 0
+last_trade_candle = None
 loss_streak = 0
+last_balance = None
 BOT_RUNNING = True
 LAST_UPDATE_ID = None
 
-last_balance = None
 last_direction = None
 last_pair = None
 last_context = None
-last_processed_candle = None
 
 # ================= TELEGRAM =================
 
@@ -90,7 +91,6 @@ def check_telegram():
     except:
         pass
 
-
 # ================= IQ OPTION =================
 
 def connect_iq():
@@ -98,15 +98,14 @@ def connect_iq():
     iq.connect()
 
     if not iq.check_connect():
-        raise Exception("Error conectando a IQ Option")
+        raise Exception("Error conectando IQ Option")
 
     iq.change_balance("PRACTICE")
     return iq
 
 
 iq = connect_iq()
-send("🔥 BOT V5 ACTIVO")
-
+send("🔥 BOT CONTINUATION ACTIVO")
 
 # ================= CSV =================
 
@@ -124,7 +123,6 @@ def log_trade(pair, direction, result, pnl, context):
                 "trend",
                 "pattern",
                 "score",
-                "reversal",
                 "result",
                 "pnl"
             ])
@@ -133,25 +131,23 @@ def log_trade(pair, direction, result, pnl, context):
             int(time.time()),
             pair,
             direction,
-            context.get("trend"),
-            context.get("pattern"),
-            context.get("score"),
-            context.get("reversal"),
+            context["trend"] if context else "",
+            context["pattern"] if context else "",
+            context["score"] if context else "",
             result,
             pnl
         ])
-
 
 # ================= CANDLES =================
 
 def get_candles(pair, tf):
     try:
-        candles = iq.get_candles(pair, tf, 120, time.time())
+        data = iq.get_candles(pair, tf, 120, time.time())
 
-        if not candles:
+        if not data:
             return None
 
-        df = pd.DataFrame(candles)
+        df = pd.DataFrame(data)
         df.rename(columns={"max": "high", "min": "low"}, inplace=True)
 
         return add_indicators(df)
@@ -159,10 +155,9 @@ def get_candles(pair, tf):
     except:
         return None
 
-
 # ================= TIMING =================
 
-def wait_new_candle():
+def wait_candle_open():
     while True:
         server_time = iq.get_server_timestamp()
         sec = int(server_time) % 60
@@ -173,20 +168,16 @@ def wait_new_candle():
 
         time.sleep(0.01)
 
-
 # ================= TRADE =================
 
 def trade(pair, direction, expiration, context):
-    global trade_open
-    global last_trade_time
-    global last_balance
-    global last_direction
-    global last_pair
-    global last_context
-
-    wait_new_candle()
+    global trade_open, last_trade_time
+    global last_balance, last_direction
+    global last_pair, last_context
 
     try:
+        wait_candle_open()
+
         last_balance = iq.get_balance()
 
         status, trade_id = iq.buy(
@@ -199,6 +190,7 @@ def trade(pair, direction, expiration, context):
         if status:
             trade_open = True
             last_trade_time = time.time()
+
             last_direction = direction
             last_pair = pair
             last_context = context
@@ -207,8 +199,7 @@ def trade(pair, direction, expiration, context):
                 f"🎯 {pair} {direction.upper()} {expiration}m\n"
                 f"Trend: {context['trend']}\n"
                 f"Pattern: {context['pattern']}\n"
-                f"Score: {context['score']}\n"
-                f"Reversal: {context['reversal']}"
+                f"Score: {context['score']}"
             )
 
             print(msg)
@@ -217,12 +208,10 @@ def trade(pair, direction, expiration, context):
     except Exception as e:
         print("Trade error:", e)
 
-
 # ================= RESULT =================
 
 def check_result():
-    global trade_open
-    global loss_streak
+    global trade_open, loss_streak
 
     if not trade_open:
         return
@@ -253,8 +242,7 @@ def check_result():
     except:
         trade_open = False
 
-
-# ================= LOOP =================
+# ================= LOOP PRINCIPAL =================
 
 while True:
     try:
@@ -270,6 +258,10 @@ while True:
             time.sleep(0.5)
             continue
 
+        if time.time() - last_trade_time < TRADE_COOLDOWN:
+            time.sleep(0.2)
+            continue
+
         if loss_streak >= MAX_LOSS_STREAK:
             send("🛑 STOP POR RACHAS")
             time.sleep(300)
@@ -279,16 +271,14 @@ while True:
         server_time = int(iq.get_server_timestamp())
         current_candle = server_time // 60
 
-        if current_candle == last_processed_candle:
+        if last_trade_candle == current_candle:
             time.sleep(0.2)
             continue
 
-        # Esperar a que cierre la vela anterior
+        # Esperar cierre de vela anterior
         if server_time % 60 != 1:
             time.sleep(0.05)
             continue
-
-        last_processed_candle = current_candle
 
         for pair in PAIRS:
             df_m1 = get_candles(pair, 60)
@@ -301,16 +291,17 @@ while True:
 
             if signal:
                 trade(pair, signal, expiration, context)
+                last_trade_candle = current_candle
                 break
 
         time.sleep(0.2)
 
     except Exception as e:
-        print("Loop error:", e)
+        print("Error:", e)
 
         try:
             iq = connect_iq()
-            send("♻️ RECONNECTED")
+            send("♻️ RECONEXIÓN EXITOSA")
         except:
             pass
 
