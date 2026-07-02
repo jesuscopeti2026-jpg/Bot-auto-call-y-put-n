@@ -24,9 +24,7 @@ MAX_LOSS_STREAK = 3
 TRADE_COOLDOWN = 60
 
 PAIRS = [
-    "EURUSD-OTC",
-    "GBPUSD-OTC",
-    "EURJPY-OTC"
+    "EURUSD" 
 ]
 
 # ================= ESTADO =================
