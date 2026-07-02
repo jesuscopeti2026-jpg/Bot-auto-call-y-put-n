@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-# ================= BASE =================
+# ================= INDICADORES =================
 
 def add_indicators(df):
     df = df.copy()
@@ -16,7 +16,7 @@ def add_indicators(df):
     return df
 
 
-# ================= CANDLE HELPERS =================
+# ================= CANDLE =================
 
 def candle_stats(c):
     body = abs(c["close"] - c["open"])
@@ -34,12 +34,12 @@ def candle_stats(c):
     upper = c["high"] - max(c["open"], c["close"])
     lower = min(c["open"], c["close"]) - c["low"]
 
+    direction = "neutral"
+
     if c["close"] > c["open"]:
         direction = "bull"
     elif c["close"] < c["open"]:
         direction = "bear"
-    else:
-        direction = "neutral"
 
     return {
         "body": body,
@@ -50,7 +50,7 @@ def candle_stats(c):
     }
 
 
-# ================= TREND / STRUCTURE =================
+# ================= ESTRUCTURA =================
 
 def detect_trend(df):
     highs = df["high"].tail(12).tolist()
@@ -62,12 +62,12 @@ def detect_trend(df):
     ll = 0
 
     for i in range(1, len(highs)):
-        if highs[i] > highs[i-1]:
+        if highs[i] > highs[i - 1]:
             hh += 1
         else:
             lh += 1
 
-        if lows[i] > lows[i-1]:
+        if lows[i] > lows[i - 1]:
             hl += 1
         else:
             ll += 1
@@ -81,108 +81,104 @@ def detect_trend(df):
     return "range"
 
 
-# ================= ZONES =================
+# ================= ZONAS =================
 
-def detect_zones(df):
+def support_resistance(df):
     resistance = df["high"].tail(20).max()
     support = df["low"].tail(20).min()
     return resistance, support
 
 
-def near_zone(price, zone, atr):
-    if pd.isna(atr):
-        return False
-
-    distance = abs(price - zone)
-    return distance <= atr * 0.4
-
-
-# ================= REVERSAL POINT =================
-
-def reversal_point(df):
+def near_reversal_zone(df):
     c = df.iloc[-2]
-    stats = candle_stats(c)
-
-    resistance, support = detect_zones(df)
     atr = df["atr"].iloc[-2]
 
-    if near_zone(c["high"], resistance, atr):
-        if stats["upper"] > stats["body"] * 1.5:
-            return "sell_reversal"
+    if pd.isna(atr):
+        return True
 
-    if near_zone(c["low"], support, atr):
-        if stats["lower"] > stats["body"] * 1.5:
-            return "buy_reversal"
+    resistance, support = support_resistance(df)
 
-    return None
+    near_res = abs(c["close"] - resistance) <= atr * 0.40
+    near_sup = abs(c["close"] - support) <= atr * 0.40
+
+    return near_res or near_sup
 
 
-# ================= TWO-CANDLE READER =================
+# ================= CONTINUATION =================
 
-def read_two_candles(df):
+def continuation_signal(df):
+    trend = detect_trend(df)
+
+    if trend == "range":
+        return None, None
+
     prev = df.iloc[-3]
     curr = df.iloc[-2]
 
     p = candle_stats(prev)
     c = candle_stats(curr)
 
-    # BUY continuation / reversal
-    if c["dir"] == "bull":
+    # ===== CALL =====
+    if trend == "bullish":
+
+        # pullback pequeño
+        if p["dir"] != "bear":
+            return None, None
+
+        # vela actual alcista fuerte
+        if c["dir"] != "bull":
+            return None, None
+
+        if c["ratio"] < 0.55:
+            return None, None
+
+        # ruptura de máximo
         if curr["close"] > prev["high"]:
-            if c["ratio"] > 0.55:
-                return "call", "bull_break"
+            return "call", "bull_continuation"
 
-        if p["dir"] == "bear":
-            if c["ratio"] > p["ratio"]:
-                return "call", "bull_absorption"
+    # ===== PUT =====
+    if trend == "bearish":
 
-    # SELL continuation / reversal
-    if c["dir"] == "bear":
+        if p["dir"] != "bull":
+            return None, None
+
+        if c["dir"] != "bear":
+            return None, None
+
+        if c["ratio"] < 0.55:
+            return None, None
+
         if curr["close"] < prev["low"]:
-            if c["ratio"] > 0.55:
-                return "put", "bear_break"
-
-        if p["dir"] == "bull":
-            if c["ratio"] > p["ratio"]:
-                return "put", "bear_absorption"
+            return "put", "bear_continuation"
 
     return None, None
 
 
-# ================= SCORING =================
+# ================= SCORE =================
 
-def build_score(df, trend, signal, pattern):
+def build_score(df, trend, pattern):
     score = 0
 
-    if trend != "range":
-        score += 2
+    score += 3  # tendencia clara
 
-    reversal = reversal_point(df)
-
-    if reversal:
-        score += 3
-
+    prev = candle_stats(df.iloc[-3])
     curr = candle_stats(df.iloc[-2])
 
+    # pullback limpio
+    if prev["ratio"] < 0.55:
+        score += 2
+
+    # vela fuerte
     if curr["ratio"] > 0.60:
         score += 2
 
-    if "break" in pattern:
-        score += 2
-
-    if "absorption" in pattern:
-        score += 3
-
-    if trend == "bullish" and signal == "call":
-        score += 2
-
-    if trend == "bearish" and signal == "put":
-        score += 2
+    # ruptura fuerte
+    score += 3
 
     return score
 
 
-# ================= MAIN SIGNAL =================
+# ================= SIGNAL =================
 
 def pro_signal(df_m1, df_m5):
     if len(df_m1) < 50:
@@ -190,30 +186,28 @@ def pro_signal(df_m1, df_m5):
 
     trend = detect_trend(df_m1)
 
-    signal, pattern = read_two_candles(df_m1)
+    if trend == "range":
+        return None, None, None
+
+    # NO operar zonas de reversión
+    if near_reversal_zone(df_m1):
+        return None, None, None
+
+    signal, pattern = continuation_signal(df_m1)
 
     if signal is None:
         return None, None, None
 
-    reversal = reversal_point(df_m1)
+    score = build_score(df_m1, trend, pattern)
 
-    if reversal == "buy_reversal" and signal != "call":
-        return None, None, None
-
-    if reversal == "sell_reversal" and signal != "put":
-        return None, None, None
-
-    score = build_score(df_m1, trend, signal, pattern)
-
-    # SOLO SETUPS DE ALTA PRECISION
+    # SOLO setups de alta calidad
     if score < 8:
         return None, None, None
 
     context = {
         "trend": trend,
         "pattern": pattern,
-        "score": score,
-        "reversal": reversal
+        "score": score
     }
 
     return signal, 1, context
