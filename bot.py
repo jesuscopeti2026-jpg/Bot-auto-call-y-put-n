@@ -19,13 +19,11 @@ PASSWORD = os.getenv("IQ_PASSWORD")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-BASE_AMOUNT = 3.33
+BASE_AMOUNT = 2.5
 MAX_LOSS_STREAK = 3
 TRADE_COOLDOWN = 60
 
-PAIRS = [
-    "EURUSD" 
-]
+PAIR = "EURUSD"
 
 # ================= ESTADO =================
 
@@ -38,7 +36,6 @@ BOT_RUNNING = True
 LAST_UPDATE_ID = None
 
 last_direction = None
-last_pair = None
 last_context = None
 
 # ================= TELEGRAM =================
@@ -89,6 +86,7 @@ def check_telegram():
     except:
         pass
 
+
 # ================= IQ OPTION =================
 
 def connect_iq():
@@ -103,11 +101,11 @@ def connect_iq():
 
 
 iq = connect_iq()
-send("🔥 BOT CONTINUATION ACTIVO")
+send("🔥 BOT STRUCTURE ACTIVO")
 
 # ================= CSV =================
 
-def log_trade(pair, direction, result, pnl, context):
+def log_trade(direction, result, pnl, context):
     file_exists = os.path.exists("trades.csv")
 
     with open("trades.csv", "a", newline="") as f:
@@ -127,7 +125,7 @@ def log_trade(pair, direction, result, pnl, context):
 
         writer.writerow([
             int(time.time()),
-            pair,
+            PAIR,
             direction,
             context["trend"] if context else "",
             context["pattern"] if context else "",
@@ -138,9 +136,9 @@ def log_trade(pair, direction, result, pnl, context):
 
 # ================= CANDLES =================
 
-def get_candles(pair, tf):
+def get_candles(tf):
     try:
-        data = iq.get_candles(pair, tf, 120, time.time())
+        data = iq.get_candles(PAIR, tf, 120, time.time())
 
         if not data:
             return None
@@ -168,10 +166,9 @@ def wait_candle_open():
 
 # ================= TRADE =================
 
-def trade(pair, direction, expiration, context):
+def trade(direction, expiration, context):
     global trade_open, last_trade_time
-    global last_balance, last_direction
-    global last_pair, last_context
+    global last_balance, last_direction, last_context
 
     try:
         wait_candle_open()
@@ -180,7 +177,7 @@ def trade(pair, direction, expiration, context):
 
         status, trade_id = iq.buy(
             BASE_AMOUNT,
-            pair,
+            PAIR,
             direction,
             expiration
         )
@@ -188,13 +185,11 @@ def trade(pair, direction, expiration, context):
         if status:
             trade_open = True
             last_trade_time = time.time()
-
             last_direction = direction
-            last_pair = pair
             last_context = context
 
             msg = (
-                f"🎯 {pair} {direction.upper()} {expiration}m\n"
+                f"🎯 {PAIR} {direction.upper()} {expiration}m\n"
                 f"Trend: {context['trend']}\n"
                 f"Pattern: {context['pattern']}\n"
                 f"Score: {context['score']}"
@@ -220,22 +215,21 @@ def check_result():
     try:
         current_balance = iq.get_balance()
         pnl = current_balance - last_balance
-
         trade_open = False
 
         if pnl > 0:
             loss_streak = 0
             send(f"✅ WIN +{round(pnl,2)}")
-            log_trade(last_pair, last_direction, "WIN", pnl, last_context)
+            log_trade(last_direction, "WIN", pnl, last_context)
 
         elif pnl < 0:
             loss_streak += 1
             send(f"❌ LOSS {round(pnl,2)} | Racha {loss_streak}")
-            log_trade(last_pair, last_direction, "LOSS", pnl, last_context)
+            log_trade(last_direction, "LOSS", pnl, last_context)
 
         else:
             send("⚪ DRAW")
-            log_trade(last_pair, last_direction, "DRAW", pnl, last_context)
+            log_trade(last_direction, "DRAW", pnl, last_context)
 
     except:
         trade_open = False
@@ -273,24 +267,19 @@ while True:
             time.sleep(0.2)
             continue
 
-        # Esperar cierre de vela anterior
         if server_time % 60 != 1:
             time.sleep(0.05)
             continue
 
-        for pair in PAIRS:
-            df_m1 = get_candles(pair, 60)
-            df_m5 = get_candles(pair, 300)
+        df_m1 = get_candles(60)
+        df_m5 = get_candles(300)
 
-            if df_m1 is None or df_m5 is None:
-                continue
-
+        if df_m1 is not None and df_m5 is not None:
             signal, expiration, context = pro_signal(df_m1, df_m5)
 
             if signal:
-                trade(pair, signal, expiration, context)
+                trade(signal, expiration, context)
                 last_trade_candle = current_candle
-                break
 
         time.sleep(0.2)
 
