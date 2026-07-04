@@ -23,7 +23,15 @@ BASE_AMOUNT = 2.5
 MAX_LOSS_STREAK = 3
 TRADE_COOLDOWN = 60
 
-PAIR = "EURUSD"
+PAIR = [ "EURUSD-OTC",
+    "GBPUSD-OTC",
+    "EURJPY-OTC",
+    "AUDCAD-OTC",
+    "AUDUSD-OTC", 
+    "USDCAD-OTC",
+    "USDCHF-OTC",
+    "EURGBP-OTC",
+    "GBPJPY-OTC" ]
 
 # ================= ESTADO =================
 
