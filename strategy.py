@@ -3,25 +3,33 @@ import numpy as np
 # ================= INDICADORES =================
 
 def add_indicators(df):
-    df["ema20"] = df["close"].ewm(span=20).mean()
+    df = df.copy()
 
-    df["tr"] = np.maximum(df["high"] - df["low"],
-                np.maximum(abs(df["high"] - df["close"].shift()),
-                           abs(df["low"] - df["close"].shift())))
+    # EMA 20
+    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+
+    # ATR 14
+    high_low = df["high"] - df["low"]
+    high_close = abs(df["high"] - df["close"].shift())
+    low_close = abs(df["low"] - df["close"].shift())
+
+    df["tr"] = np.maximum(high_low, np.maximum(high_close, low_close))
     df["atr"] = df["tr"].rolling(14).mean()
 
     return df
 
-# ================= ZONA 3H =================
 
-def get_zone(df_h3):
-    highs = df_h3["high"].rolling(20).max()
-    lows = df_h3["low"].rolling(20).min()
+# ================= ZONA HTF =================
+
+def get_zone(df_htf):
+    highs = df_htf["high"].rolling(20).max()
+    lows = df_htf["low"].rolling(20).min()
 
     resistance = highs.iloc[-1]
     support = lows.iloc[-1]
 
     return support, resistance
+
 
 # ================= DOBLE TEST =================
 
@@ -40,6 +48,7 @@ def double_touch(df_m5, level, is_support=True):
 
     return touches >= 2
 
+
 # ================= CONFIRMACIÓN =================
 
 def confirmation(df_m1, direction):
@@ -53,30 +62,35 @@ def confirmation(df_m1, direction):
 
     return False
 
+
 # ================= SEÑAL =================
 
-def pro_signal(df_m1, df_m5, df_h3):
+def pro_signal(df_m1, df_m5, df_htf):
 
-    if len(df_h3) < 20:
+    if len(df_htf) < 20:
         return None, None
 
-    support, resistance = get_zone(df_h3)
+    support, resistance = get_zone(df_htf)
+
     price = df_m1["close"].iloc[-1]
     atr = df_m1["atr"].iloc[-1]
 
-    # 🔥 margen de zona
+    if np.isnan(atr):
+        return None, None
+
+    # Margen dinámico basado en ATR
     buffer = atr * 1.2
 
-    # ================= SOPORTE =================
+    # ========= SOPORTE =========
 
-    if abs(price - support) < buffer:
+    if abs(price - support) <= buffer:
         if double_touch(df_m5, support, True):
             if confirmation(df_m1, "call"):
                 return "call", 3
 
-    # ================= RESISTENCIA =================
+    # ========= RESISTENCIA =========
 
-    if abs(price - resistance) < buffer:
+    if abs(price - resistance) <= buffer:
         if double_touch(df_m5, resistance, False):
             if confirmation(df_m1, "put"):
                 return "put", 3
