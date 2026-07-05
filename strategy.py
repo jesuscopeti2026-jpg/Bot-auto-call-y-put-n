@@ -1,124 +1,84 @@
+import numpy as np
 import pandas as pd
 
-# ================= BASE =================
+# ==================================================
+# 🚀 ESTRATEGIA OPTIMIZADA - IGUAL A TUS GRÁFICOS
+# ✅ Señales de reversión cerca de bandas
+# ✅ Mayor sensibilidad sin perder calidad
+# ✅ Coincide con flechas verdes/rojas
+# ==================================================
 
-def add_indicators(df):
-    return df.copy()
+def get_reversal_signal(df, tolerancia_nivel=0.0028, ventana_niveles=5):
+    if len(df) < 8:
+        return None
 
+    df = df.copy()
 
-# ================= VELAS =================
+    # Bandas dinámicas igual a gráfico
+    df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+    df['desv'] = df['close'].rolling(window=20).std()
+    df['banda_sup'] = df['ema20'] + 1.8 * df['desv']
+    df['banda_inf'] = df['ema20'] - 1.8 * df['desv']
 
-def candle_direction(candle):
-    if candle["close"] > candle["open"]:
-        return "bull"
-    elif candle["close"] < candle["open"]:
-        return "bear"
-    return "neutral"
+    # Filtros de tendencia
+    df['ema8'] = df['close'].ewm(span=8, adjust=False).mean()
+    df['ema13'] = df['close'].ewm(span=13, adjust=False).mean()
 
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=5, min_periods=1).mean()
+    avg_loss = loss.rolling(window=5, min_periods=1).mean().replace(0, 0.001)
+    rs = avg_gain / avg_loss
+    df['rsi'] = 100.0 - (100.0 / (1.0 + rs))
 
-# ================= ESTRUCTURA =================
+    # --------------------------
+    # DATOS ACTUALES
+    # --------------------------
+    try:
+        sup = float(df['banda_sup'].iloc[-1])
+        inf = float(df['banda_inf'].iloc[-1])
+        med = float(df['ema20'].iloc[-1])
 
-def detect_structure(df):
-    highs = df["high"].tail(6).tolist()
-    lows = df["low"].tail(6).tolist()
+        c1 = float(df['close'].iloc[-1])
+        o1 = float(df['open'].iloc[-1])
+        h1 = float(df['high'].iloc[-1])
+        l1 = float(df['low'].iloc[-1])
 
-    hh = 0
-    hl = 0
-    lh = 0
-    ll = 0
+        e8 = float(df['ema8'].iloc[-1])
+        e13 = float(df['ema13'].iloc[-1])
+        rsi1 = float(df['rsi'].iloc[-1])
 
-    for i in range(1, len(highs)):
-        if highs[i] > highs[i - 1]:
-            hh += 1
-        else:
-            lh += 1
+    except Exception:
+        return None
 
-        if lows[i] > lows[i - 1]:
-            hl += 1
-        else:
-            ll += 1
+    # --------------------------
+    # CONDICIONES DE REVERSIÓN
+    # --------------------------
+    fuerza = 0
+    senal = None
+    tipo_nivel = ""
 
-    if hh >= 3 and hl >= 3:
-        return "bullish"
+    # COMPRA: Precio cerca de banda inferior
+    if l1 <= inf * (1 + tolerancia_nivel) and c1 > l1:
+        if rsi1 < 35 and e8 > e13:
+            senal = "call"
+            tipo_nivel = "SOPORTE / BANDA INFERIOR"
+            fuerza = 45
+            if c1 > o1: fuerza += 10
+            if rsi1 < 28: fuerza += 10
 
-    if lh >= 3 and ll >= 3:
-        return "bearish"
+    # VENTA: Precio cerca de banda superior
+    if h1 >= sup * (1 - tolerancia_nivel) and c1 < h1:
+        if rsi1 > 65 and e8 < e13:
+            senal = "put"
+            tipo_nivel = "RESISTENCIA / BANDA SUPERIOR"
+            fuerza = 45
+            if c1 < o1: fuerza += 10
+            if rsi1 > 72: fuerza += 10
 
-    return "range"
+    if senal is not None:
+        fuerza = max(32, min(fuerza, 100))
+        return (senal, fuerza, tipo_nivel)
 
-
-# ================= CONTINUIDAD =================
-
-def structure_signal(df):
-    structure = detect_structure(df)
-
-    if structure == "range":
-        return None, None
-
-    prev = df.iloc[-3]
-    curr = df.iloc[-2]
-
-    # CALL
-    if structure == "bullish":
-
-        if candle_direction(curr) != "bull":
-            return None, None
-
-        if curr["high"] >= prev["high"]:
-            return "call", "bull_continuation"
-
-    # PUT
-    if structure == "bearish":
-
-        if candle_direction(curr) != "bear":
-            return None, None
-
-        if curr["low"] <= prev["low"]:
-            return "put", "bear_continuation"
-
-    return None, None
-
-
-# ================= SCORE =================
-
-def build_score(df):
-    prev = df.iloc[-3]
-    curr = df.iloc[-2]
-
-    score = 5
-
-    prev_body = abs(prev["close"] - prev["open"])
-    curr_body = abs(curr["close"] - curr["open"])
-
-    if curr_body > prev_body:
-        score += 2
-
-    if curr_body > 0:
-        score += 1
-
-    return score
-
-
-# ================= SEÑAL PRINCIPAL =================
-
-def pro_signal(df_m1, df_m5):
-    if len(df_m1) < 20:
-        return None, None, None
-
-    structure = detect_structure(df_m1)
-
-    if structure == "range":
-        return None, None, None
-
-    signal, pattern = structure_signal(df_m1)
-
-    if signal is None:
-        return None, None, None
-
-    context = {
-        "trend": structure,
-        "pattern": pattern,
-        "score": build_score(df_m1)
-    }
-
-    return signal, 1, context
+    return None
