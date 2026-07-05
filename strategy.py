@@ -6,48 +6,48 @@ def add_indicators(df):
     return df.copy()
 
 
-# ================= CANDLE =================
+# ================= VELAS =================
 
-def candle_direction(c):
-    if c["close"] > c["open"]:
+def candle_direction(candle):
+    if candle["close"] > candle["open"]:
         return "bull"
-    elif c["close"] < c["open"]:
+    elif candle["close"] < candle["open"]:
         return "bear"
     return "neutral"
 
 
-# ================= STRUCTURE =================
+# ================= ESTRUCTURA =================
 
 def detect_structure(df):
-    highs = df["high"].tail(8).tolist()
-    lows = df["low"].tail(8).tolist()
+    highs = df["high"].tail(6).tolist()
+    lows = df["low"].tail(6).tolist()
 
-    higher_highs = 0
-    higher_lows = 0
-    lower_highs = 0
-    lower_lows = 0
+    hh = 0
+    hl = 0
+    lh = 0
+    ll = 0
 
     for i in range(1, len(highs)):
         if highs[i] > highs[i - 1]:
-            higher_highs += 1
+            hh += 1
         else:
-            lower_highs += 1
+            lh += 1
 
         if lows[i] > lows[i - 1]:
-            higher_lows += 1
+            hl += 1
         else:
-            lower_lows += 1
+            ll += 1
 
-    if higher_highs >= 5 and higher_lows >= 5:
+    if hh >= 3 and hl >= 3:
         return "bullish"
 
-    if lower_highs >= 5 and lower_lows >= 5:
+    if lh >= 3 and ll >= 3:
         return "bearish"
 
     return "range"
 
 
-# ================= SIGNAL =================
+# ================= CONTINUIDAD =================
 
 def structure_signal(df):
     structure = detect_structure(df)
@@ -55,24 +55,26 @@ def structure_signal(df):
     if structure == "range":
         return None, None
 
-    prev = df.iloc[-3]   # vela anterior
-    curr = df.iloc[-2]   # vela cerrada actual
+    prev = df.iloc[-3]
+    curr = df.iloc[-2]
 
-    prev_dir = candle_direction(prev)
-    curr_dir = candle_direction(curr)
-
-    # ================= CALL =================
+    # CALL
     if structure == "bullish":
-        # vela actual confirma continuidad
-        if curr_dir == "bull":
-            if curr["close"] > prev["close"]:
-                return "call", "bull_structure"
 
-    # ================= PUT =================
+        if candle_direction(curr) != "bull":
+            return None, None
+
+        if curr["high"] >= prev["high"]:
+            return "call", "bull_continuation"
+
+    # PUT
     if structure == "bearish":
-        if curr_dir == "bear":
-            if curr["close"] < prev["close"]:
-                return "put", "bear_structure"
+
+        if candle_direction(curr) != "bear":
+            return None, None
+
+        if curr["low"] <= prev["low"]:
+            return "put", "bear_continuation"
 
     return None, None
 
@@ -83,9 +85,7 @@ def build_score(df):
     prev = df.iloc[-3]
     curr = df.iloc[-2]
 
-    score = 0
-
-    score += 6  # estructura dominante
+    score = 5
 
     prev_body = abs(prev["close"] - prev["open"])
     curr_body = abs(curr["close"] - curr["open"])
@@ -94,12 +94,12 @@ def build_score(df):
         score += 2
 
     if curr_body > 0:
-        score += 2
+        score += 1
 
     return score
 
 
-# ================= MAIN =================
+# ================= SEÑAL PRINCIPAL =================
 
 def pro_signal(df_m1, df_m5):
     if len(df_m1) < 20:
@@ -115,12 +115,10 @@ def pro_signal(df_m1, df_m5):
     if signal is None:
         return None, None, None
 
-    score = build_score(df_m1)
-
     context = {
         "trend": structure,
         "pattern": pattern,
-        "score": score
+        "score": build_score(df_m1)
     }
 
     return signal, 1, context
