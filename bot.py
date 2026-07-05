@@ -6,7 +6,7 @@ import sys
 import logging
 
 from iqoptionapi.stable_api import IQ_Option
-from estrategia import add_indicators, pro_signal
+from strategy import add_indicators, pro_signal
 
 logging.getLogger().setLevel(logging.CRITICAL)
 sys.stderr = open(os.devnull, 'w')
@@ -39,7 +39,7 @@ def send(msg):
             data={"chat_id": CHAT_ID, "text": msg},
             timeout=5
         )
-    except:
+    except Exception:
         pass
 
 
@@ -66,22 +66,22 @@ def check_commands():
                 bot_active = True
                 send("✅ BOT ACTIVADO")
 
-    except:
+    except Exception:
         pass
 
-# ================= IQ =================
+# ================= IQ OPTION =================
 
 iq = IQ_Option(EMAIL, PASSWORD)
 iq.connect()
 
 if not iq.check_connect():
-    print("Error conexión")
+    print("❌ Error de conexión con IQ Option")
     exit()
 
 iq.change_balance("PRACTICE")
 
-print("🔥 BOT ACTIVO REAL")
-send("🔥 BOT ACTIVO REAL")
+print("🔥 BOT ACTIVO")
+send("🔥 BOT ACTIVO")
 
 # ================= DATOS =================
 
@@ -91,7 +91,7 @@ def get_candles(pair, tf):
         df = pd.DataFrame(data)
         df.rename(columns={"max": "high", "min": "low"}, inplace=True)
         return add_indicators(df)
-    except:
+    except Exception:
         return None
 
 # ================= TRADE =================
@@ -109,8 +109,10 @@ def trade(pair, direction, expiration):
         msg = f"🎯 {pair} {direction.upper()} ({expiration}m)"
         print(msg)
         send(msg)
+    else:
+        print(f"❌ No se pudo abrir operación en {pair}")
 
-# ================= LOOP =================
+# ================= LOOP PRINCIPAL =================
 
 while True:
     try:
@@ -120,7 +122,6 @@ while True:
             time.sleep(1)
             continue
 
-        # evitar múltiples trades
         if trade_open:
             if time.time() - last_trade_time > current_expiration * 60:
                 trade_open = False
@@ -130,7 +131,7 @@ while True:
 
         t = int(iq.get_server_timestamp())
 
-        # 🔥 ventana de entrada (NO SOLO segundo exacto)
+        # Espera hasta los últimos segundos de la vela
         if t % 60 < 55:
             time.sleep(0.2)
             continue
@@ -139,12 +140,12 @@ while True:
 
             df_m1 = get_candles(pair, 60)
             df_m5 = get_candles(pair, 300)
-            df_htf = get_candles(pair, 900)  # 🔥 corregido
+            df_h3 = get_candles(pair, 900)
 
-            if df_m1 is None or df_m5 is None or df_htf is None:
+            if df_m1 is None or df_m5 is None or df_h3 is None:
                 continue
 
-            signal, expiration = pro_signal(df_m1, df_m5, df_htf)
+            signal, expiration = pro_signal(df_m1, df_m5, df_h3)
 
             if signal:
                 trade(pair, signal, expiration)
