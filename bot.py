@@ -28,7 +28,7 @@ trade_open = False
 last_trade_time = 0
 bot_active = True
 last_update_id = None
-current_expiration = 1
+current_expiration = 5
 
 # ================= TELEGRAM =================
 
